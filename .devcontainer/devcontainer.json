@@ -1,23 +1,31 @@
 {
-    "name": "Your Dev Container",
+    "name": "CUDA Dev Container",
     "build": {
         "dockerfile": "Dockerfile",
         "context": ".."
     },
     "runArgs": [
-        "-e", "DISPLAY=host.docker.internal:0.0",
-        "-v", "/mnt/wslg/.X11-unix:/tmp/.X11-unix:rw"
+        "--gpus=all",
+        "--privileged",
+        "--volume", "/dev/input:/dev/input",
+        "--env", "DISPLAY=${localEnv:DISPLAY}",
+        "--volume", "/tmp/.X11-unix:/tmp/.X11-unix:rw",
+        "--volume", "${localEnv:HOME}/.Xauthority:/root/.Xauthority:rw",
+        "--env", "XAUTHORITY=/root/.Xauthority",
+        "--env", "NVIDIA_DRIVER_CAPABILITIES=all"
     ],
     "customizations": {
         "vscode": {
             "extensions": [
+                "rust-lang.rust-analyzer",
                 "ms-vscode.cpptools",
-                "rust-lang.rust-analyzer"
+                "ms-vscode.cmake-tools"
             ],
             "settings": {
                 "terminal.integrated.shell.linux": "/bin/bash"
             }
         }
     },
-    "postCreateCommand": "cargo build"
+    "postCreateCommand": "cargo build",
+    "remoteUser": "root"
 }

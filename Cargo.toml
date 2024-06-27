@@ -8,4 +8,5 @@ edition = "2021"
 [dependencies]
 cust = "0.3.2"
 image = "0.24"
+sdl2 = "0.34"
 

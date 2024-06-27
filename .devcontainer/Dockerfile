@@ -1,3 +1,4 @@
+# Use the official CUDA base image
 FROM nvidia/cuda:12.4.0-base-ubuntu22.04
 
 # Set working directory
@@ -25,6 +26,10 @@ RUN apt-get update && apt-get install -y \
     x11-apps \
     locales \
     desktop-file-utils \
+    feh \
+    imagemagick \
+    xdotool \
+    libsdl2-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Set up locale
@@ -47,15 +52,11 @@ RUN mkdir -p src/gpu_utils
 COPY src/gpu_utils/kernel.cu src/gpu_utils/kernel.cu
 RUN nvcc -ptx -o src/gpu_utils/kernel.ptx src/gpu_utils/kernel.cu
 
-# Copy the shell script and set execute permission
-COPY run.sh .
-RUN chmod +x run.sh
-
-# Update the desktop database
-RUN update-desktop-database
+# Create the input group if it doesn't exist and add root user to it
+RUN groupadd -f input && usermod -aG input root
 
 # Set environment variable for X11
 ENV DISPLAY=host.docker.internal:0.0
 
-# Set the command to run the shell script
-CMD ["./run.sh"]
+# Set the default command to run the Rust application
+CMD ["cargo", "run"]
