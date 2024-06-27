@@ -18,6 +18,11 @@ RUN apt-get update && apt-get install -y \
     pkg-config \
     software-properties-common \
     xdg-utils \
+    libxext6 \
+    libxrender1 \
+    libxtst6 \
+    libxi6 \
+    x11-apps \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Rust
