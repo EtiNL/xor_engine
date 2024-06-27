@@ -6,7 +6,7 @@ WORKDIR /app
 # Copy application files
 COPY . .
 
-# Install dependencies
+# Install dependencies and set locale
 RUN apt-get update && apt-get install -y \
     build-essential \
     cmake \
@@ -23,7 +23,15 @@ RUN apt-get update && apt-get install -y \
     libxtst6 \
     libxi6 \
     x11-apps \
+    locales \
+    desktop-file-utils \
     && rm -rf /var/lib/apt/lists/*
+
+# Set up locale
+RUN locale-gen en_US.UTF-8
+ENV LANG en_US.UTF-8
+ENV LANGUAGE en_US:en
+ENV LC_ALL en_US.UTF-8
 
 # Install Rust
 RUN curl https://sh.rustup.rs -sSf | sh -s -- -y
@@ -42,6 +50,12 @@ RUN nvcc -ptx -o src/gpu_utils/kernel.ptx src/gpu_utils/kernel.cu
 # Copy the shell script and set execute permission
 COPY run.sh .
 RUN chmod +x run.sh
+
+# Update the desktop database
+RUN update-desktop-database
+
+# Set environment variable for X11
+ENV DISPLAY=host.docker.internal:0.0
 
 # Set the command to run the shell script
 CMD ["./run.sh"]

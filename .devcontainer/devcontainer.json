@@ -1,20 +1,22 @@
 {
-    "name": "CUDA Rust Dev Container",
+    "name": "Your Dev Container",
     "build": {
-        "dockerfile": "../Dockerfile",
+        "dockerfile": "Dockerfile",
         "context": ".."
     },
-    "runArgs": ["--gpus", "all"],
+    "runArgs": [
+        "-e", "DISPLAY=host.docker.internal:0.0",
+        "-v", "/mnt/wslg/.X11-unix:/tmp/.X11-unix:rw"
+    ],
     "customizations": {
         "vscode": {
+            "extensions": [
+                "ms-vscode.cpptools",
+                "rust-lang.rust-analyzer"
+            ],
             "settings": {
                 "terminal.integrated.shell.linux": "/bin/bash"
-            },
-            "extensions": [
-                "rust-lang.rust",
-                "ms-vscode.cmake-tools",
-                "ms-azuretools.vscode-docker"
-            ]
+            }
         }
     },
     "postCreateCommand": "cargo build"
