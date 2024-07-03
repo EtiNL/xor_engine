@@ -3,10 +3,6 @@ name = "xor_engine"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
-cust = "0.3.2"
-image = "0.24"
-sdl2 = "0.34"
-
+sdl2 = "0.34.5"
+cuda-driver-sys = "0.3.0"

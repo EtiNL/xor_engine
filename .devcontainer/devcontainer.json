@@ -1,5 +1,5 @@
 {
-    "name": "CUDA Dev Container",
+    "name": "Rust SDL2 Dev Container",
     "build": {
         "dockerfile": "Dockerfile",
         "context": ".."
@@ -7,25 +7,21 @@
     "runArgs": [
         "--gpus=all",
         "--privileged",
-        "--volume", "/dev/input:/dev/input",
-        "--env", "DISPLAY=${localEnv:DISPLAY}",
-        "--volume", "/tmp/.X11-unix:/tmp/.X11-unix:rw",
-        "--volume", "${localEnv:HOME}/.Xauthority:/root/.Xauthority:rw",
-        "--env", "XAUTHORITY=/root/.Xauthority",
+        "--env", "WAYLAND_DISPLAY=wayland-0",
+        "--env", "XDG_RUNTIME_DIR=/run/user/1000",
+        "--env", "PULSE_SERVER=unix:/run/user/1000/pulse/native",
+        "--volume", "/run/user/1000:/run/user/1000",
+        "--device", "/dev/dri",
         "--env", "NVIDIA_DRIVER_CAPABILITIES=all"
     ],
     "customizations": {
         "vscode": {
             "extensions": [
-                "rust-lang.rust-analyzer",
-                "ms-vscode.cpptools",
-                "ms-vscode.cmake-tools"
-            ],
-            "settings": {
-                "terminal.integrated.shell.linux": "/bin/bash"
-            }
+                "rust-lang.rust-analyzer"
+            ]
         }
     },
     "postCreateCommand": "cargo build",
+    "workspaceFolder": "/app",
     "remoteUser": "root"
 }
