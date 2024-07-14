@@ -3,7 +3,7 @@
 #include <cmath>
 
 // CUDA kernel to compute depth map of a sphere
-extern "C" __global__ void computeDepthMap(int width, int height, float sphereX, float sphereY, float sphereZ, float radius, unsigned char *image) {
+extern "C" __global__ void computeDepthMap(int width, int height, float sphereX, float sphereY, float sphereZ, float radius, float angle, unsigned char *image) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
@@ -14,9 +14,16 @@ extern "C" __global__ void computeDepthMap(int width, int height, float sphereX,
         float ndc_x = (2.0f * x / width) - 1.0f;
         float ndc_y = (2.0f * y / height) - 1.0f;
 
+        // Apply rotation based on angle
+        float rad = angle * M_PI / 180.0f;
+        float cos_a = cosf(rad);
+        float sin_a = sinf(rad);
+        float rotated_x = ndc_x * cos_a - ndc_y * sin_a;
+        float rotated_y = ndc_x * sin_a + ndc_y * cos_a;
+
         // Assuming a simple orthographic projection
-        float screen_x = ndc_x * 10.0f; // Scale to screen size
-        float screen_y = ndc_y * 10.0f; // Scale to screen size
+        float screen_x = rotated_x * 10.0f; // Scale to screen size
+        float screen_y = rotated_y * 10.0f; // Scale to screen size
         float screen_z = 0.0f;
 
         // Compute distance from point on screen to sphere center

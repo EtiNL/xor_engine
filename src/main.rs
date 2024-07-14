@@ -15,24 +15,26 @@ fn main() -> Result<(), Box<dyn Error>> {
     let sdl_context = sdl2::init()?;
     let video_subsystem = sdl_context.video()?;
     let ttf_context = sdl2::ttf::init().map_err(|e| e.to_string())?;
-    
+
+    // Customize screen size
+    let width = 800u32;
+    let height = 600u32;
+
     let window = video_subsystem
-        .window("Depth Map Renderer", 128, 128)
+        .window("Depth Map Renderer", width, height)
         .position_centered()
         .build()
         .expect("Failed to create window");
 
-    let mut canvas = window.into_canvas().present_vsync().build().expect("Failed to create canvas");
+    let mut canvas = window.into_canvas().build().expect("Failed to create canvas");
     let texture_creator = canvas.texture_creator();
-    let mut texture = texture_creator.create_texture_streaming(PixelFormatEnum::RGB24, 128, 128)?;
+    let mut texture = texture_creator.create_texture_streaming(PixelFormatEnum::RGB24, width, height)?;
 
     let mut sdl_event_pump = sdl_context.event_pump()?;
 
     // Initialize CUDA context
     let cuda_context = CudaContext::new("./src/gpu_utils/kernel.ptx")?;
 
-    let width = 128;
-    let height = 128;
     let sphere_x = 0.0f32;
     let sphere_y = 10.0f32;
     let sphere_z = 0.0f32;
@@ -51,16 +53,32 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut last_frame = Instant::now();
     let mut frame_count = 0;
     let mut fps = 0;
+    let mut angle = 0.0f32; // Angle controlled by mouse
+    let mut mouse_down = false; // Track if mouse button is pressed
 
     'running: loop {
         for event in sdl_event_pump.poll_iter() {
             match event {
                 Event::Quit { .. } => break 'running,
+                Event::MouseButtonDown { x, y, .. } => {
+                    mouse_down = true;
+                    // Adjust angle based on mouse position
+                    angle = (x as f32 / width as f32) * 360.0;
+                },
+                Event::MouseButtonUp { .. } => {
+                    mouse_down = false;
+                },
+                Event::MouseMotion { x, .. } => {
+                    if mouse_down {
+                        // Adjust angle based on mouse position
+                        angle = (x as f32 / width as f32) * 360.0;
+                    }
+                },
                 _ => {}
             }
         }
 
-        cuda_context.launch_kernel(width, height, sphere_x, sphere_y, sphere_z, radius, &mut image);
+        cuda_context.launch_kernel(width as i32, height as i32, sphere_x, sphere_y, sphere_z, radius, angle, &mut image);
 
         texture.update(None, &image, (width * 3) as usize)?;
         canvas.copy(&texture, None, None)?;

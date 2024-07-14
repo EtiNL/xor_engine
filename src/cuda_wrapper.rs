@@ -56,7 +56,7 @@ impl CudaContext {
         }
     }
 
-    pub fn launch_kernel(&self, width: i32, height: i32, sphere_x: f32, sphere_y: f32, sphere_z: f32, radius: f32, image: &mut [u8]) {
+    pub fn launch_kernel(&self, width: i32, height: i32, sphere_x: f32, sphere_y: f32, sphere_z: f32, radius: f32, angle: f32, image: &mut [u8]) {
         let grid_dim = dim3 {
             x: ((width + 15) / 16) as u32,
             y: ((height + 15) / 16) as u32,
@@ -86,6 +86,7 @@ impl CudaContext {
                 &sphere_y as *const _ as *const std::ffi::c_void,
                 &sphere_z as *const _ as *const std::ffi::c_void,
                 &radius as *const _ as *const std::ffi::c_void,
+                &angle as *const _ as *const std::ffi::c_void,
                 &d_image as *const _ as *const std::ffi::c_void,
             ];
     
