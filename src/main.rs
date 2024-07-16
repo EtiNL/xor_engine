@@ -17,11 +17,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let ttf_context = sdl2::ttf::init().map_err(|e| e.to_string())?;
 
     // Customize screen size
-    let width = 800u32;
-    let height = 600u32;
+    let width = 960u32;
+    let height = 540u32;
 
     let window = video_subsystem
-        .window("Depth Map Renderer", width, height)
+        .window("XOR", width, height)
         .position_centered()
         .build()
         .expect("Failed to create window");
@@ -53,7 +53,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut last_frame = Instant::now();
     let mut frame_count = 0;
     let mut fps = 0;
-    let mut angle = 0.0f32; // Angle controlled by mouse
+    let mut x_screen = 0.0f32;
+    let mut y_screen = 0.0f32;
+    let mut theta_0 = 0.0f32; // pi/2
+    let mut phi_0 = 0.0f32;
+    let mut theta_1 = 0.0f32;
+    let mut phi_1 = 0.0f32;
     let mut mouse_down = false; // Track if mouse button is pressed
 
     'running: loop {
@@ -63,22 +68,29 @@ fn main() -> Result<(), Box<dyn Error>> {
                 Event::MouseButtonDown { x, y, .. } => {
                     mouse_down = true;
                     // Adjust angle based on mouse position
-                    angle = (x as f32 / width as f32) * 360.0;
+                    x_screen = x;
+                    y_screen = y;
+                    printf("x:{}, y:{}", x_screen, y_screen);
                 },
                 Event::MouseButtonUp { .. } => {
                     mouse_down = false;
+                    theta_0 = theta_1;
+                    phi_0 = phi_1;
+                    theta_1 = 0.0f32;
+                    phi_1 = 0.0f32;
                 },
-                Event::MouseMotion { x, .. } => {
+                Event::MouseMotion { x, y,.. } => {
                     if mouse_down {
-                        // Adjust angle based on mouse position
-                        angle = (x as f32 / width as f32) * 360.0;
+                        printf("relative x:{}, relative y:{}", x-x_screen, y-y_screen);
+                        theta_1 = arctan(y_screen-y - height / 2);
+                        phi_1 = arctan(x_screen-x - width / 2);
                     }
                 },
                 _ => {}
             }
         }
 
-        cuda_context.launch_kernel(width as i32, height as i32, sphere_x, sphere_y, sphere_z, radius, angle, &mut image);
+        cuda_context.launch_kernel(width as i32, height as i32, sphere_x, sphere_y, sphere_z, radius, theta_0 + theta_1, phi_0 + phi_1, &mut image);
 
         texture.update(None, &image, (width * 3) as usize)?;
         canvas.copy(&texture, None, None)?;
@@ -113,7 +125,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         
         canvas.present();
 
-        //thread::sleep(Duration::from_millis(16)); // ~60 FPS
+        // thread::sleep(Duration::from_millis(16)); // ~60 FPS
     }
 
     Ok(())

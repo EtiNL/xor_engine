@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y \
     libsdl2-dev \
     libsdl2-ttf-dev \
     libwayland-dev \
+    libx11-dev \
     locales \
     curl \
     wget \
@@ -51,6 +52,11 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 RUN wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/nsight-systems-2024.2.3_2024.2.3.38-1_amd64.deb && \
     apt-get install -y ./nsight-systems-2024.2.3_2024.2.3.38-1_amd64.deb && \
     rm nsight-systems-2024.2.3_2024.2.3.38-1_amd64.deb
+
+# Set environment variables for CUDA
+ENV CUDA_HOME=/usr/local/cuda
+ENV PATH=${CUDA_HOME}/bin:${PATH}
+ENV LD_LIBRARY_PATH=${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}
 
 # Set environment variables for Wayland
 ENV WAYLAND_DISPLAY=wayland-0
