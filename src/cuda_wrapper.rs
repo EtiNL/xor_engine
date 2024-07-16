@@ -1,14 +1,26 @@
-use cuda_driver_sys::*;
+use cuda_driver_sys::{
+    cuCtxCreate_v2, cuInit, cuLaunchKernel, cuMemAlloc_v2, cuMemcpyDtoH_v2, cuMemcpyHtoD_v2,
+    cuModuleGetFunction, cuModuleLoad, cuCtxDestroy_v2, cuModuleUnload, cuMemFree_v2,
+    CUdeviceptr, CUcontext, CUfunction, CUmodule, CUresult, cudaError_enum::CUDA_SUCCESS,
+};
 use std::any::Any;
 use std::ffi::CString;
 use std::ptr::null_mut;
 use std::mem;
 
+#[derive(Debug)]  // Ajout de Debug
 #[repr(C)]
 struct dim3 {
     x: u32,
     y: u32,
     z: u32,
+}
+
+fn check_cuda_result(result: CUresult, msg: &str) -> Result<(), Box<dyn std::error::Error>> {
+    if result != CUDA_SUCCESS {
+        return Err(Box::from(format!("{} failed: {:?}", msg, result)));
+    }
+    Ok(())
 }
 
 pub struct CudaContext {
@@ -20,42 +32,27 @@ pub struct CudaContext {
 impl CudaContext {
     pub fn new(ptx_path: &str) -> Result<Self, Box<dyn std::error::Error>> {
         unsafe {
-            let result = cuInit(0);
-            if result != CUresult::CUDA_SUCCESS {
-                eprintln!("cuInit failed: {:?}", result);
-                return Err(Box::from("cuInit failed"));
-            }
+            check_cuda_result(cuInit(0), "cuInit")?;
 
             let mut context = null_mut();
-            let result = cuCtxCreate_v2(&mut context, 0, 0);
-            if result != CUresult::CUDA_SUCCESS {
-                eprintln!("cuCtxCreate_v2 failed: {:?}", result);
-                return Err(Box::from("cuCtxCreate_v2 failed"));
-            }
+            check_cuda_result(cuCtxCreate_v2(&mut context, 0, 0), "cuCtxCreate_v2")?;
 
             let mut module = null_mut();
             let ptx_cstr = CString::new(ptx_path)?;
-            let result = cuModuleLoad(&mut module, ptx_cstr.as_ptr());
-            if result != CUresult::CUDA_SUCCESS {
-                eprintln!("cuModuleLoad failed: {:?}", result);
-                return Err(Box::from("cuModuleLoad failed"));
-            }
+            check_cuda_result(cuModuleLoad(&mut module, ptx_cstr.as_ptr()), "cuModuleLoad")?;
 
             let mut function = null_mut();
             let kernel_name = CString::new("computeSDF")?;
-            let result = cuModuleGetFunction(&mut function, module, kernel_name.as_ptr());
-            if result != CUresult::CUDA_SUCCESS {
-                eprintln!("cuModuleGetFunction failed: {:?}", result);
-                return Err(Box::from("cuModuleGetFunction failed"));
-            }
+            check_cuda_result(cuModuleGetFunction(&mut function, module, kernel_name.as_ptr()), "cuModuleGetFunction")?;
 
             Ok(Self { context, module, function })
         }
     }
 
-    pub fn launch_kernel(&self, args: &mut [Box<dyn KernelArg>]) {
-        let grid_dim = dim3 { x: 16, y: 16, z: 1 }; // Example values, adapt as needed
-        let block_dim = dim3 { x: 16, y: 16, z: 1 }; // Example values, adapt as needed
+    pub fn launch_kernel(&self, args: &mut [Box<dyn KernelArg>], width: u32, height: u32) -> Result<(), Box<dyn std::error::Error>> {
+        let grid_dim = dim3 { x: (width + 15) / 16, y: (height + 15) / 16, z: 1 };
+        let block_dim = dim3 { x: 16, y: 16, z: 1 };
+
 
         unsafe {
             let mut device_ptrs: Vec<CUdeviceptr> = Vec::new();
@@ -64,26 +61,34 @@ impl CudaContext {
                 device_ptrs.push(arg.device_ptr());
             }
 
-            let params: Vec<*const std::ffi::c_void> = device_ptrs.iter()
-                .map(|&ptr| &ptr as *const CUdeviceptr as *const std::ffi::c_void)
-                .collect();
+            let mut params: Vec<*mut std::ffi::c_void> = Vec::new();
+            for ptr in &device_ptrs {
+                params.push(ptr as *const CUdeviceptr as *mut std::ffi::c_void);
+            }
+
+            println!("Launching kernel with grid_dim: {:?}, block_dim: {:?}", grid_dim, block_dim);
+            for (i, param) in params.iter().enumerate() {
+                println!("Param {}: {:?}", i, param);
+            }
 
             let result = cuLaunchKernel(
                 self.function,
                 grid_dim.x, grid_dim.y, grid_dim.z,
                 block_dim.x, block_dim.y, block_dim.z,
-                0, null_mut(), params.as_ptr() as *mut _, null_mut(),
+                0, null_mut(), params.as_mut_ptr(), null_mut(),
             );
 
-            if result != CUresult::CUDA_SUCCESS {
+            if result != CUDA_SUCCESS {
                 eprintln!("cuLaunchKernel failed: {:?}", result);
+                return Err(Box::from(format!("cuLaunchKernel failed: {:?}", result)));
             }
 
             for arg in args.iter_mut() {
                 arg.copy_to_host();
             }
         }
-    }
+        Ok(())
+    }      
 }
 
 impl Drop for CudaContext {
@@ -114,14 +119,28 @@ impl<T> DeviceBuffer<T> {
             device_ptr: 0,
         }
     }
+
+    pub fn get_host_data(&self) -> &Vec<T> {
+        &self.host_data
+    }
+
+    pub fn get_host_data_mut(&mut self) -> &mut Vec<T> {
+        &mut self.host_data
+    }
 }
 
-impl<T> KernelArg for DeviceBuffer<T> where T: Copy + 'static {
+impl<T: 'static> KernelArg for DeviceBuffer<T> where T: Copy + 'static {
     fn allocate_on_device(&mut self) {
         let size = self.host_data.len() * mem::size_of::<T>();
         unsafe {
-            cuMemAlloc_v2(&mut self.device_ptr, size);
-            cuMemcpyHtoD_v2(self.device_ptr, self.host_data.as_ptr() as *const _, size);
+            let result = cuMemAlloc_v2(&mut self.device_ptr, size);
+            if result != CUDA_SUCCESS {
+                panic!("cuMemAlloc_v2 failed: {:?}", result);
+            }
+            let result = cuMemcpyHtoD_v2(self.device_ptr, self.host_data.as_ptr() as *const _, size);
+            if result != CUDA_SUCCESS {
+                panic!("cuMemcpyHtoD_v2 failed: {:?}", result);
+            }
         }
     }
 
@@ -132,7 +151,11 @@ impl<T> KernelArg for DeviceBuffer<T> where T: Copy + 'static {
     fn copy_to_host(&mut self) {
         let size = self.host_data.len() * mem::size_of::<T>();
         unsafe {
-            cuMemcpyDtoH_v2(self.host_data.as_mut_ptr() as *mut _, self.device_ptr, size);
+            let result = cuMemcpyDtoH_v2(self.host_data.as_mut_ptr() as *mut _, self.device_ptr, size);
+            if result != CUDA_SUCCESS {
+                eprintln!("cuMemcpyDtoH_v2 failed: {:?}", result);
+                panic!("cuMemcpyDtoH_v2 failed: {:?}", result);
+            }
         }
     }
 

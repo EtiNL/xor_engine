@@ -1,14 +1,14 @@
 mod cuda_wrapper;
 
+use cuda_wrapper::{CudaContext, DeviceBuffer, KernelArg};
 use sdl2::event::Event;
 use sdl2::pixels::PixelFormatEnum;
 use sdl2::rect::Rect;
 use sdl2::render::{BlendMode, TextureQuery};
 use std::error::Error;
+use std::ffi::CString;
 use std::thread;
 use std::time::{Duration, Instant};
-
-use cuda_wrapper::{CudaContext, DeviceBuffer, KernelArg};
 
 fn main() -> Result<(), Box<dyn Error>> {
     // Initialize the SDL2 context
@@ -34,15 +34,16 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Initialize CUDA context
     let cuda_context = CudaContext::new("./src/gpu_utils/kernel.ptx")?;
+    println!("CUDA context initialized successfully.");
 
     // Initialize kernel arguments
-    let mut sphere_x = DeviceBuffer::new(vec![0.0f32]);
-    let mut sphere_y = DeviceBuffer::new(vec![10.0f32]);
-    let mut sphere_z = DeviceBuffer::new(vec![0.0f32]);
-    let mut radius = DeviceBuffer::new(vec![5.0f32]);
-    let mut theta = DeviceBuffer::new(vec![0.0f32]);
-    let mut phi = DeviceBuffer::new(vec![0.0f32]);
-    let mut image = DeviceBuffer::new(vec![0u8; (width * height * 3) as usize]);
+    let sphere_x = DeviceBuffer::new(vec![0.0f32]);
+    let sphere_y = DeviceBuffer::new(vec![10.0f32]);
+    let sphere_z = DeviceBuffer::new(vec![0.0f32]);
+    let radius = DeviceBuffer::new(vec![5.0f32]);
+    let theta = DeviceBuffer::new(vec![0.0f32]);
+    let phi = DeviceBuffer::new(vec![0.0f32]);
+    let image = DeviceBuffer::new(vec![0u8; (width * height * 3) as usize]);
 
     let mut args: Vec<Box<dyn KernelArg>> = vec![
         Box::new(DeviceBuffer::new(vec![width as i32])),
@@ -55,6 +56,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         Box::new(phi),
         Box::new(image),
     ];
+
+    println!("Kernel arguments initialized successfully.");
 
     // Load a font
     let font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"; // Replace with a path to a valid TTF file
@@ -85,7 +88,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                     // Adjust angle based on mouse position
                     x_screen = x as f32;
                     y_screen = y as f32;
-                    print!("x:{}, y:{}", x_screen, y_screen);
                 },
                 Event::MouseButtonUp { .. } => {
                     mouse_down = false;
@@ -96,7 +98,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                 },
                 Event::MouseMotion { x, y, .. } => {
                     if mouse_down {
-                        print!("relative x:{}, relative y:{}", x as f32 - x_screen, y as f32 - y_screen);
                         let delta_x = x as f32 - x_screen;
                         let delta_y = y as f32 - y_screen;
                         theta_1 = (delta_y - height as f32 / 2.0).atan();
@@ -114,18 +115,22 @@ fn main() -> Result<(), Box<dyn Error>> {
         args[5] = Box::new(DeviceBuffer::new(vec![theta_combined]));
         args[6] = Box::new(DeviceBuffer::new(vec![phi_combined]));
 
-        cuda_context.launch_kernel(&mut args);
+        println!("Launching CUDA kernel.");
+        match cuda_context.launch_kernel(&mut args, width, height) {
+            Ok(_) => println!("CUDA kernel launched successfully."),
+            Err(e) => eprintln!("Failed to launch CUDA kernel: {}", e),
+        }
 
         // Update the texture with the new image data
         if let Some(arg) = args.pop() {
-            if let Ok(mut image_buffer) = arg.downcast::<DeviceBuffer<u8>>() {
+            if let Some(image_buffer) = arg.as_any().downcast_ref::<DeviceBuffer<u8>>() {
                 // Normalizing the image buffer for display
-                let max_val = *image_buffer.host_data.iter().max().unwrap();
-                let min_val = *image_buffer.host_data.iter().min().unwrap();
-                for val in image_buffer.host_data.iter_mut() {
-                    *val = ((*val - min_val) as f32 / (max_val - min_val) as f32 * 255.0) as u8;
-                }
-                texture.update(None, &image_buffer.host_data, (width * 3) as usize)?;
+                let max_val = *image_buffer.get_host_data().iter().max().unwrap();
+                let min_val = *image_buffer.get_host_data().iter().min().unwrap();
+                let normalized_data: Vec<u8> = image_buffer.get_host_data().iter()
+                    .map(|&val| ((val as f32 - min_val as f32) / (max_val as f32 - min_val as f32) * 255.0) as u8)
+                    .collect();
+                texture.update(None, &normalized_data, (width * 3) as usize)?;
             }
         }
 
@@ -161,7 +166,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         
         canvas.present();
 
-        // thread::sleep(Duration::from_millis(16)); // ~60 FPS
+        thread::sleep(Duration::from_millis(16)); // ~60 FPS
     }
 
     Ok(())
