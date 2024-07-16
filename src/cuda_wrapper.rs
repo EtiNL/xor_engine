@@ -99,6 +99,7 @@ pub trait KernelArg: Any {
     fn allocate_on_device(&mut self);
     fn device_ptr(&self) -> CUdeviceptr;
     fn copy_to_host(&mut self);
+    fn as_any(&self) -> &dyn Any;
 }
 
 pub struct DeviceBuffer<T> {
@@ -115,7 +116,7 @@ impl<T> DeviceBuffer<T> {
     }
 }
 
-impl<T> KernelArg for DeviceBuffer<T> where T: Copy {
+impl<T> KernelArg for DeviceBuffer<T> where T: Copy + 'static {
     fn allocate_on_device(&mut self) {
         let size = self.host_data.len() * mem::size_of::<T>();
         unsafe {
@@ -134,6 +135,10 @@ impl<T> KernelArg for DeviceBuffer<T> where T: Copy {
             cuMemcpyDtoH_v2(self.host_data.as_mut_ptr() as *mut _, self.device_ptr, size);
         }
     }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 impl<T> Drop for DeviceBuffer<T> {
@@ -141,11 +146,5 @@ impl<T> Drop for DeviceBuffer<T> {
         unsafe {
             cuMemFree_v2(self.device_ptr);
         }
-    }
-}
-
-impl dyn KernelArg {
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 }
