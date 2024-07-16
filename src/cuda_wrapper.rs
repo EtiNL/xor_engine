@@ -1,8 +1,8 @@
 use cuda_driver_sys::*;
 use std::ffi::CString;
 use std::ptr::null_mut;
+use std::mem;
 
-// Define the dim3 structure
 #[repr(C)]
 struct dim3 {
     x: u32,
@@ -56,60 +56,37 @@ impl CudaContext {
         }
     }
 
-    pub fn launch_kernel(&self, width: i32, height: i32, sphere_x: f32, sphere_y: f32, sphere_z: f32, radius: f32, theta: f32, phi: f32, image: &mut [u8]) {
-        let grid_dim = dim3 {
-            x: ((width + 15) / 16) as u32,
-            y: ((height + 15) / 16) as u32,
-            z: 1,
-        };
-        let block_dim = dim3 { x: 16, y: 16, z: 1 };
-    
+    pub fn launch_kernel(&self, args: &mut [Box<dyn KernelArg>]) {
+        let grid_dim = dim3 { x: 16, y: 16, z: 1 }; // Example values, adapt as needed
+        let block_dim = dim3 { x: 16, y: 16, z: 1 }; // Example values, adapt as needed
+
         unsafe {
-            let mut d_image: CUdeviceptr = 0;
-            let result = cuMemAlloc_v2(&mut d_image, (width * height * 3) as usize);
-            if result != CUresult::CUDA_SUCCESS {
-                eprintln!("cuMemAlloc_v2 failed: {:?}", result);
-                return;
+            let mut device_ptrs: Vec<CUdeviceptr> = Vec::new();
+            for arg in args.iter_mut() {
+                arg.allocate_on_device();
+                device_ptrs.push(arg.device_ptr());
             }
-    
-            let result = cuMemcpyHtoD_v2(d_image, image.as_ptr() as *const _, (width * height * 3) as usize);
-            if result != CUresult::CUDA_SUCCESS {
-                eprintln!("cuMemcpyHtoD_v2 failed: {:?}", result);
-                cuMemFree_v2(d_image);
-                return;
-            }
-    
-            let params = [
-                &width as *const _ as *const std::ffi::c_void,
-                &height as *const _ as *const std::ffi::c_void,
-                &sphere_x as *const _ as *const std::ffi::c_void,
-                &sphere_y as *const _ as *const std::ffi::c_void,
-                &sphere_z as *const _ as *const std::ffi::c_void,
-                &radius as *const _ as *const std::ffi::c_void,
-                &theta as *const _ as *const std::ffi::c_void,
-                &phi as *const _ as *const std::ffi::c_void,
-                &d_image as *const _ as *const std::ffi::c_void,
-            ];
-    
+
+            let params: Vec<*const std::ffi::c_void> = device_ptrs.iter()
+                .map(|&ptr| &ptr as *const CUdeviceptr as *const std::ffi::c_void)
+                .collect();
+
             let result = cuLaunchKernel(
                 self.function,
                 grid_dim.x, grid_dim.y, grid_dim.z,
                 block_dim.x, block_dim.y, block_dim.z,
                 0, null_mut(), params.as_ptr() as *mut _, null_mut(),
             );
-    
+
             if result != CUresult::CUDA_SUCCESS {
                 eprintln!("cuLaunchKernel failed: {:?}", result);
             }
-    
-            let result = cuMemcpyDtoH_v2(image.as_mut_ptr() as *mut _, d_image, (width * height * 3) as usize);
-            if result != CUresult::CUDA_SUCCESS {
-                eprintln!("cuMemcpyDtoH_v2 failed: {:?}", result);
+
+            for arg in args.iter_mut() {
+                arg.copy_to_host();
             }
-    
-            cuMemFree_v2(d_image);
         }
-    }    
+    }
 }
 
 impl Drop for CudaContext {
@@ -117,6 +94,55 @@ impl Drop for CudaContext {
         unsafe {
             cuModuleUnload(self.module);
             cuCtxDestroy_v2(self.context);
+        }
+    }
+}
+
+pub trait KernelArg {
+    fn allocate_on_device(&mut self);
+    fn device_ptr(&self) -> CUdeviceptr;
+    fn copy_to_host(&mut self);
+}
+
+pub struct DeviceBuffer<T> {
+    host_data: Vec<T>,
+    device_ptr: CUdeviceptr,
+}
+
+impl<T> DeviceBuffer<T> {
+    pub fn new(data: Vec<T>) -> Self {
+        Self {
+            host_data: data,
+            device_ptr: 0,
+        }
+    }
+}
+
+impl<T> KernelArg for DeviceBuffer<T> where T: Copy {
+    fn allocate_on_device(&mut self) {
+        let size = self.host_data.len() * mem::size_of::<T>();
+        unsafe {
+            cuMemAlloc_v2(&mut self.device_ptr, size);
+            cuMemcpyHtoD_v2(self.device_ptr, self.host_data.as_ptr() as *const _, size);
+        }
+    }
+
+    fn device_ptr(&self) -> CUdeviceptr {
+        self.device_ptr
+    }
+
+    fn copy_to_host(&mut self) {
+        let size = self.host_data.len() * mem::size_of::<T>();
+        unsafe {
+            cuMemcpyDtoH_v2(self.host_data.as_mut_ptr() as *mut _, self.device_ptr, size);
+        }
+    }
+}
+
+impl<T> Drop for DeviceBuffer<T> {
+    fn drop(&mut self) {
+        unsafe {
+            cuMemFree_v2(self.device_ptr);
         }
     }
 }
