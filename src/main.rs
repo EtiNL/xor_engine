@@ -119,6 +119,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         // Update the texture with the new image data
         if let Some(arg) = args.pop() {
             if let Ok(image_buffer) = arg.downcast::<DeviceBuffer<u8>>() {
+                image_buffer = (image_buffer-image_buffer.min())/(image_buffer.max()-image_buffer.min())
                 texture.update(None, &image_buffer.host_data, (width * 3) as usize)?;
             }
         }
