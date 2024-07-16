@@ -1,4 +1,5 @@
 use cuda_driver_sys::*;
+use std::any::Any;
 use std::ffi::CString;
 use std::ptr::null_mut;
 use std::mem;
@@ -19,14 +20,12 @@ pub struct CudaContext {
 impl CudaContext {
     pub fn new(ptx_path: &str) -> Result<Self, Box<dyn std::error::Error>> {
         unsafe {
-            // Initialize the CUDA driver
             let result = cuInit(0);
             if result != CUresult::CUDA_SUCCESS {
                 eprintln!("cuInit failed: {:?}", result);
                 return Err(Box::from("cuInit failed"));
             }
 
-            // Create a context
             let mut context = null_mut();
             let result = cuCtxCreate_v2(&mut context, 0, 0);
             if result != CUresult::CUDA_SUCCESS {
@@ -34,7 +33,6 @@ impl CudaContext {
                 return Err(Box::from("cuCtxCreate_v2 failed"));
             }
 
-            // Load the module
             let mut module = null_mut();
             let ptx_cstr = CString::new(ptx_path)?;
             let result = cuModuleLoad(&mut module, ptx_cstr.as_ptr());
@@ -43,9 +41,8 @@ impl CudaContext {
                 return Err(Box::from("cuModuleLoad failed"));
             }
 
-            // Get the function
             let mut function = null_mut();
-            let kernel_name = CString::new("computeDepthMap")?;
+            let kernel_name = CString::new("computeSDF")?;
             let result = cuModuleGetFunction(&mut function, module, kernel_name.as_ptr());
             if result != CUresult::CUDA_SUCCESS {
                 eprintln!("cuModuleGetFunction failed: {:?}", result);
@@ -98,7 +95,7 @@ impl Drop for CudaContext {
     }
 }
 
-pub trait KernelArg {
+pub trait KernelArg: Any {
     fn allocate_on_device(&mut self);
     fn device_ptr(&self) -> CUdeviceptr;
     fn copy_to_host(&mut self);
@@ -144,5 +141,11 @@ impl<T> Drop for DeviceBuffer<T> {
         unsafe {
             cuMemFree_v2(self.device_ptr);
         }
+    }
+}
+
+impl dyn KernelArg {
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }

@@ -20,8 +20,8 @@ extern "C" __global__ void computeSDF(int width, int height, float sphereX, floa
         float screen_z = cos(theta);
 
         // Compute distance from point on screen to sphere center
-        float dx = screen_x - sphereX;
-        float dy = screen_y - sphereY;
+        float dx = rotated_x - sphereX;
+        float dy = rotated_y - sphereY;
         float dz = screen_z - sphereZ;
         float distance = sqrtf(dx * dx + dy * dy + dz * dz);
 
@@ -29,8 +29,9 @@ extern "C" __global__ void computeSDF(int width, int height, float sphereX, floa
         float sdf = distance - radius;
 
         // Set the color based on depth
-        image[idx] = sdf;        // Red channel
-        image[idx + 1] = sdf;    // Green channel
-        image[idx + 2] = sdf;    // Blue channel
+        unsigned char depth = static_cast<unsigned char>(255.0f * (sdf + radius) / (2 * radius)); // Normalizing depth value
+        image[idx] = depth;        // Red channel
+        image[idx + 1] = depth;    // Green channel
+        image[idx + 2] = depth;    // Blue channel
     }
 }

@@ -70,7 +70,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut fps = 0;
     let mut x_screen = 0.0f32;
     let mut y_screen = 0.0f32;
-    let mut theta_0 = std::f32::consts::PI / 2;
+    let mut theta_0 = std::f32::consts::PI / 2.0;
     let mut phi_0 = 0.0f32;
     let mut theta_1 = 0.0f32;
     let mut phi_1 = 0.0f32;
@@ -85,7 +85,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     // Adjust angle based on mouse position
                     x_screen = x as f32;
                     y_screen = y as f32;
-                    printf("x:{}, y:{}", x_screen, y_screen);
+                    print!("x:{}, y:{}", x_screen, y_screen);
                 },
                 Event::MouseButtonUp { .. } => {
                     mouse_down = false;
@@ -96,7 +96,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 },
                 Event::MouseMotion { x, y, .. } => {
                     if mouse_down {
-                        printf("relative x:{}, relative y:{}", x-x_screen, y-y_screen);
+                        print!("relative x:{}, relative y:{}", x as f32 - x_screen, y as f32 - y_screen);
                         let delta_x = x as f32 - x_screen;
                         let delta_y = y as f32 - y_screen;
                         theta_1 = (delta_y - height as f32 / 2.0).atan();
@@ -118,8 +118,13 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         // Update the texture with the new image data
         if let Some(arg) = args.pop() {
-            if let Ok(image_buffer) = arg.downcast::<DeviceBuffer<u8>>() {
-                image_buffer = (image_buffer-image_buffer.min())/(image_buffer.max()-image_buffer.min())
+            if let Ok(mut image_buffer) = arg.downcast::<DeviceBuffer<u8>>() {
+                // Normalizing the image buffer for display
+                let max_val = *image_buffer.host_data.iter().max().unwrap();
+                let min_val = *image_buffer.host_data.iter().min().unwrap();
+                for val in image_buffer.host_data.iter_mut() {
+                    *val = ((*val - min_val) as f32 / (max_val - min_val) as f32 * 255.0) as u8;
+                }
                 texture.update(None, &image_buffer.host_data, (width * 3) as usize)?;
             }
         }
