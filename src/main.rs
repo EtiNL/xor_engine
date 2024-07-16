@@ -8,7 +8,7 @@ use std::error::Error;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use cuda_wrapper::CudaContext;
+use cuda_wrapper::{CudaContext, DeviceBuffer, KernelArg};
 
 fn main() -> Result<(), Box<dyn Error>> {
     // Initialize the SDL2 context
@@ -35,11 +35,26 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Initialize CUDA context
     let cuda_context = CudaContext::new("./src/gpu_utils/kernel.ptx")?;
 
-    let sphere_x = 0.0f32;
-    let sphere_y = 10.0f32;
-    let sphere_z = 0.0f32;
-    let radius = 5.0f32;
-    let mut image = vec![0u8; (width * height * 3) as usize];
+    // Initialize kernel arguments
+    let mut sphere_x = DeviceBuffer::new(vec![0.0f32]);
+    let mut sphere_y = DeviceBuffer::new(vec![10.0f32]);
+    let mut sphere_z = DeviceBuffer::new(vec![0.0f32]);
+    let mut radius = DeviceBuffer::new(vec![5.0f32]);
+    let mut theta = DeviceBuffer::new(vec![0.0f32]);
+    let mut phi = DeviceBuffer::new(vec![0.0f32]);
+    let mut image = DeviceBuffer::new(vec![0u8; (width * height * 3) as usize]);
+
+    let mut args: Vec<Box<dyn KernelArg>> = vec![
+        Box::new(DeviceBuffer::new(vec![width as i32])),
+        Box::new(DeviceBuffer::new(vec![height as i32])),
+        Box::new(sphere_x),
+        Box::new(sphere_y),
+        Box::new(sphere_z),
+        Box::new(radius),
+        Box::new(theta),
+        Box::new(phi),
+        Box::new(image),
+    ];
 
     // Load a font
     let font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"; // Replace with a path to a valid TTF file
@@ -55,7 +70,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut fps = 0;
     let mut x_screen = 0.0f32;
     let mut y_screen = 0.0f32;
-    let mut theta_0 = 0.0f32; // pi/2
+    let mut theta_0 = std::f32::consts::PI / 2;
     let mut phi_0 = 0.0f32;
     let mut theta_1 = 0.0f32;
     let mut phi_1 = 0.0f32;
@@ -68,8 +83,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                 Event::MouseButtonDown { x, y, .. } => {
                     mouse_down = true;
                     // Adjust angle based on mouse position
-                    x_screen = x;
-                    y_screen = y;
+                    x_screen = x as f32;
+                    y_screen = y as f32;
                     printf("x:{}, y:{}", x_screen, y_screen);
                 },
                 Event::MouseButtonUp { .. } => {
@@ -79,20 +94,35 @@ fn main() -> Result<(), Box<dyn Error>> {
                     theta_1 = 0.0f32;
                     phi_1 = 0.0f32;
                 },
-                Event::MouseMotion { x, y,.. } => {
+                Event::MouseMotion { x, y, .. } => {
                     if mouse_down {
                         printf("relative x:{}, relative y:{}", x-x_screen, y-y_screen);
-                        theta_1 = arctan(y_screen-y - height / 2);
-                        phi_1 = arctan(x_screen-x - width / 2);
+                        let delta_x = x as f32 - x_screen;
+                        let delta_y = y as f32 - y_screen;
+                        theta_1 = (delta_y - height as f32 / 2.0).atan();
+                        phi_1 = (delta_x - width as f32 / 2.0).atan();
                     }
                 },
                 _ => {}
             }
         }
 
-        cuda_context.launch_kernel(width as i32, height as i32, sphere_x, sphere_y, sphere_z, radius, theta_0 + theta_1, phi_0 + phi_1, &mut image);
+        // Update the kernel arguments
+        let theta_combined = theta_0 + theta_1;
+        let phi_combined = phi_0 + phi_1;
 
-        texture.update(None, &image, (width * 3) as usize)?;
+        args[5] = Box::new(DeviceBuffer::new(vec![theta_combined]));
+        args[6] = Box::new(DeviceBuffer::new(vec![phi_combined]));
+
+        cuda_context.launch_kernel(&mut args);
+
+        // Update the texture with the new image data
+        if let Some(arg) = args.pop() {
+            if let Ok(image_buffer) = arg.downcast::<DeviceBuffer<u8>>() {
+                texture.update(None, &image_buffer.host_data, (width * 3) as usize)?;
+            }
+        }
+
         canvas.copy(&texture, None, None)?;
 
         // Calculate FPS
@@ -111,17 +141,17 @@ fn main() -> Result<(), Box<dyn Error>> {
                               eprintln!("Failed to render text surface: {}", e);
                               e.to_string()
                           })?;
-        let texture = texture_creator.create_texture_from_surface(&surface)
-                                     .map_err(|e| {
-                                         eprintln!("Failed to create texture from surface: {}", e);
-                                         e.to_string()
-                                     })?;
+        let fps_texture = texture_creator.create_texture_from_surface(&surface)
+                                         .map_err(|e| {
+                                             eprintln!("Failed to create texture from surface: {}", e);
+                                             e.to_string()
+                                         })?;
         
-        let TextureQuery { width, height, .. } = texture.query();
+        let TextureQuery { width, height, .. } = fps_texture.query();
         let target = Rect::new(128 - width as i32 - 10, 10, width, height);
         
         canvas.set_blend_mode(BlendMode::Blend);
-        canvas.copy(&texture, None, Some(target))?;
+        canvas.copy(&fps_texture, None, Some(target))?;
         
         canvas.present();
 
