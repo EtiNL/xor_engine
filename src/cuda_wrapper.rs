@@ -8,7 +8,7 @@ use std::ffi::CString;
 use std::ptr::null_mut;
 use std::mem;
 
-#[derive(Debug)]  // Ajout de Debug
+#[derive(Debug)]
 #[repr(C)]
 struct dim3 {
     x: u32,
@@ -65,12 +65,12 @@ impl CudaContext {
                 params.push(ptr as *const CUdeviceptr as *mut std::ffi::c_void);
             }
 
-            println!("Launching kernel with grid_dim: {:?}, block_dim: {:?}", grid_dim, block_dim);
-            for (i, param) in params.iter().enumerate() {
-                println!("Param {}: {:?}", i, param);
-            }
+            // println!("Launching kernel with grid_dim: {:?}, block_dim: {:?}", grid_dim, block_dim);
+            // for (i, param) in params.iter().enumerate() {
+                // println!("Param {}: {:?}", i, param);
+            // }
 
-            println!("finished loading params");
+            // println!("finished loading params");
 
             let result = cuLaunchKernel(
                 self.function,
@@ -135,13 +135,10 @@ impl<T: 'static> KernelArg for DeviceBuffer<T> where T: Copy + 'static {
         let size = self.host_data.len() * mem::size_of::<T>();
         unsafe {
             let result = cuMemAlloc_v2(&mut self.device_ptr, size);
-            if result != CUDA_SUCCESS {
-                panic!("cuMemAlloc_v2 failed: {:?}", result);
-            }
+            check_cuda_result(result, "cuMemAlloc_v2").expect("Failed to allocate device memory");
+
             let result = cuMemcpyHtoD_v2(self.device_ptr, self.host_data.as_ptr() as *const _, size);
-            if result != CUDA_SUCCESS {
-                panic!("cuMemcpyHtoD_v2 failed: {:?}", result);
-            }
+            check_cuda_result(result, "cuMemcpyHtoD_v2").expect("Failed to copy memory to device");
         }
     }
 
@@ -153,10 +150,7 @@ impl<T: 'static> KernelArg for DeviceBuffer<T> where T: Copy + 'static {
         let size = self.host_data.len() * mem::size_of::<T>();
         unsafe {
             let result = cuMemcpyDtoH_v2(self.host_data.as_mut_ptr() as *mut _, self.device_ptr, size);
-            if result != CUDA_SUCCESS {
-                eprintln!("cuMemcpyDtoH_v2 failed: {:?}", result);
-                panic!("cuMemcpyDtoH_v2 failed: {:?}", result);
-            }
+            check_cuda_result(result, "cuMemcpyDtoH_v2").expect("Failed to copy memory from device");
         }
     }
 

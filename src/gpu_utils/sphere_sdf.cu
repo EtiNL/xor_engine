@@ -17,9 +17,12 @@ extern "C" __global__ void computeSDF(int width, int height, float sphereX, floa
     if (x < width && y < height) {
         int idx = (y * width + x) * 3;
 
-        // Simplified kernel: Just set a fixed value
-        image[idx] = 128;        // Red channel
-        image[idx + 1] = 128;    // Green channel
-        image[idx + 2] = 128;    // Blue channel
+        // Ensure index is within bounds
+        if (idx >= 0 && idx < width * height * 3) {
+            // Simplified kernel: Just set a fixed value
+            image[idx] = 0;        // Red channel
+            image[idx + 1] = 128;    // Green channel
+            image[idx + 2] = 128;    // Blue channel
+        }
     }
 }

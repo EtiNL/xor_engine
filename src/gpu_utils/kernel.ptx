@@ -24,39 +24,47 @@
 	.param .u64 computeSDF_param_8
 )
 {
-	.reg .pred 	%p<4>;
-	.reg .b16 	%rs<2>;
-	.reg .b32 	%r<13>;
+	.reg .pred 	%p<7>;
+	.reg .b16 	%rs<3>;
+	.reg .b32 	%r<15>;
 	.reg .b64 	%rd<5>;
 
 
-	ld.param.u32 	%r3, [computeSDF_param_0];
-	ld.param.u32 	%r4, [computeSDF_param_1];
+	ld.param.u32 	%r4, [computeSDF_param_0];
+	ld.param.u32 	%r5, [computeSDF_param_1];
 	ld.param.u64 	%rd1, [computeSDF_param_8];
-	mov.u32 	%r5, %ntid.x;
-	mov.u32 	%r6, %ctaid.x;
-	mov.u32 	%r7, %tid.x;
-	mad.lo.s32 	%r1, %r6, %r5, %r7;
-	mov.u32 	%r8, %ntid.y;
-	mov.u32 	%r9, %ctaid.y;
-	mov.u32 	%r10, %tid.y;
-	mad.lo.s32 	%r2, %r9, %r8, %r10;
-	setp.ge.s32 	%p1, %r1, %r3;
-	setp.ge.s32 	%p2, %r2, %r4;
+	mov.u32 	%r6, %ntid.x;
+	mov.u32 	%r7, %ctaid.x;
+	mov.u32 	%r8, %tid.x;
+	mad.lo.s32 	%r1, %r7, %r6, %r8;
+	mov.u32 	%r9, %ntid.y;
+	mov.u32 	%r10, %ctaid.y;
+	mov.u32 	%r11, %tid.y;
+	mad.lo.s32 	%r2, %r10, %r9, %r11;
+	setp.ge.s32 	%p1, %r1, %r4;
+	setp.ge.s32 	%p2, %r2, %r5;
 	or.pred  	%p3, %p1, %p2;
-	@%p3 bra 	$L__BB0_2;
+	@%p3 bra 	$L__BB0_3;
 
-	mad.lo.s32 	%r11, %r2, %r3, %r1;
-	mul.lo.s32 	%r12, %r11, 3;
-	cvt.s64.s32 	%rd2, %r12;
+	mad.lo.s32 	%r12, %r2, %r4, %r1;
+	mul.lo.s32 	%r3, %r12, 3;
+	setp.lt.s32 	%p4, %r12, 0;
+	mul.lo.s32 	%r13, %r4, %r5;
+	mul.lo.s32 	%r14, %r13, 3;
+	setp.ge.s32 	%p5, %r3, %r14;
+	or.pred  	%p6, %p4, %p5;
+	@%p6 bra 	$L__BB0_3;
+
+	cvt.s64.s32 	%rd2, %r3;
 	cvta.to.global.u64 	%rd3, %rd1;
 	add.s64 	%rd4, %rd3, %rd2;
-	mov.u16 	%rs1, 128;
+	mov.u16 	%rs1, 0;
 	st.global.u8 	[%rd4], %rs1;
-	st.global.u8 	[%rd4+1], %rs1;
-	st.global.u8 	[%rd4+2], %rs1;
+	mov.u16 	%rs2, 128;
+	st.global.u8 	[%rd4+1], %rs2;
+	st.global.u8 	[%rd4+2], %rs2;
 
-$L__BB0_2:
+$L__BB0_3:
 	ret;
 
 }

@@ -6,7 +6,6 @@ use sdl2::pixels::PixelFormatEnum;
 use sdl2::rect::Rect;
 use sdl2::render::{BlendMode, TextureQuery};
 use std::error::Error;
-use std::ffi::CString;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -34,7 +33,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Initialize CUDA context
     let cuda_context = CudaContext::new("./src/gpu_utils/kernel.ptx")?;
-    println!("CUDA context initialized successfully.");
 
     // Initialize kernel arguments
     let sphere_x = DeviceBuffer::new(vec![0.0f32]);
@@ -56,8 +54,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         Box::new(phi),
         Box::new(image),
     ];
-
-    println!("Kernel arguments initialized successfully.");
 
     // Load a font
     let font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"; // Replace with a path to a valid TTF file
@@ -112,26 +108,21 @@ fn main() -> Result<(), Box<dyn Error>> {
         let theta_combined = theta_0 + theta_1;
         let phi_combined = phi_0 + phi_1;
 
+        println!("theta: {}, phi: {}", theta_combined, phi_combined);
+
         args[5] = Box::new(DeviceBuffer::new(vec![theta_combined]));
         args[6] = Box::new(DeviceBuffer::new(vec![phi_combined]));
 
-        println!("Launching CUDA kernel.");
+        // Launch the CUDA kernel
         match cuda_context.launch_kernel(&mut args, width, height) {
             Ok(_) => println!("CUDA kernel launched successfully."),
             Err(e) => eprintln!("Failed to launch CUDA kernel: {}", e),
         }
 
         // Update the texture with the new image data
-        if let Some(arg) = args.pop() {
-            if let Some(image_buffer) = arg.as_any().downcast_ref::<DeviceBuffer<u8>>() {
-                // Normalizing the image buffer for display
-                let max_val = *image_buffer.get_host_data().iter().max().unwrap();
-                let min_val = *image_buffer.get_host_data().iter().min().unwrap();
-                let normalized_data: Vec<u8> = image_buffer.get_host_data().iter()
-                    .map(|&val| ((val as f32 - min_val as f32) / (max_val as f32 - min_val as f32) * 255.0) as u8)
-                    .collect();
-                texture.update(None, &normalized_data, (width * 3) as usize)?;
-            }
+        let image_arg = args.last().unwrap();
+        if let Some(image_buffer) = image_arg.as_any().downcast_ref::<DeviceBuffer<u8>>() {
+            texture.update(None, image_buffer.get_host_data(), (width * 3) as usize)?;
         }
 
         canvas.copy(&texture, None, None)?;
@@ -165,8 +156,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         canvas.copy(&fps_texture, None, Some(target))?;
         
         canvas.present();
-
-        thread::sleep(Duration::from_millis(16)); // ~60 FPS
     }
 
     Ok(())
