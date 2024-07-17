@@ -53,7 +53,6 @@ impl CudaContext {
         let grid_dim = dim3 { x: (width + 15) / 16, y: (height + 15) / 16, z: 1 };
         let block_dim = dim3 { x: 16, y: 16, z: 1 };
 
-
         unsafe {
             let mut device_ptrs: Vec<CUdeviceptr> = Vec::new();
             for arg in args.iter_mut() {
@@ -70,6 +69,8 @@ impl CudaContext {
             for (i, param) in params.iter().enumerate() {
                 println!("Param {}: {:?}", i, param);
             }
+
+            println!("finished loading params");
 
             let result = cuLaunchKernel(
                 self.function,
