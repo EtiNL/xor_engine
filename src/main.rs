@@ -34,27 +34,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Initialize CUDA context
     let cuda_context = CudaContext::new("./src/gpu_utils/kernel.ptx")?;
 
-    // Initialize kernel arguments
-    let sphere_x = DeviceBuffer::new(vec![0.0f32]);
-    let sphere_y = DeviceBuffer::new(vec![10.0f32]);
-    let sphere_z = DeviceBuffer::new(vec![0.0f32]);
-    let radius = DeviceBuffer::new(vec![5.0f32]);
-    let theta = DeviceBuffer::new(vec![0.0f32]);
-    let phi = DeviceBuffer::new(vec![0.0f32]);
-    let image = DeviceBuffer::new(vec![0u8; (width * height * 3) as usize]);
-
-    let mut args: Vec<Box<dyn KernelArg>> = vec![
-        Box::new(DeviceBuffer::new(vec![width as i32])),
-        Box::new(DeviceBuffer::new(vec![height as i32])),
-        Box::new(sphere_x),
-        Box::new(sphere_y),
-        Box::new(sphere_z),
-        Box::new(radius),
-        Box::new(theta),
-        Box::new(phi),
-        Box::new(image),
-    ];
-
     // Load a font
     let font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"; // Replace with a path to a valid TTF file
     let font = ttf_context.load_font(font_path, 16)
@@ -87,8 +66,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                 },
                 Event::MouseButtonUp { .. } => {
                     mouse_down = false;
-                    theta_0 = theta_1;
-                    phi_0 = phi_1;
+                    let theta_0 = theta_1;
+                    let phi_0 = phi_1;
                     theta_1 = 0.0f32;
                     phi_1 = 0.0f32;
                 },
@@ -105,17 +84,34 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
 
         // Update the kernel arguments
-        let theta_combined = theta_0 + theta_1;
-        let phi_combined = phi_0 + phi_1;
+        let width_cuda = DeviceBuffer::new(vec![width as i32]);
+        let height_cuda = DeviceBuffer::new(vec![height as i32]);
+        let sphere_x = DeviceBuffer::new(vec![0.0f32]);
+        let sphere_y = DeviceBuffer::new(vec![10.0f32]);
+        let sphere_z = DeviceBuffer::new(vec![0.0f32]);
+        let radius = DeviceBuffer::new(vec![5.0f32]);
+        let image = DeviceBuffer::new(vec![0u8; (width * height * 3) as usize]);
 
-        println!("theta: {}, phi: {}", theta_combined, phi_combined);
+        let theta = DeviceBuffer::new(vec![theta_0 + theta_1]);
+        let phi = DeviceBuffer::new(vec![phi_0 + phi_1]);
 
-        args[5] = Box::new(DeviceBuffer::new(vec![theta_combined]));
-        args[6] = Box::new(DeviceBuffer::new(vec![phi_combined]));
+        let mut args: Vec<Box<dyn KernelArg>> = vec![
+            Box::new(width_cuda),
+            Box::new(height_cuda),
+            Box::new(sphere_x),
+            Box::new(sphere_y),
+            Box::new(sphere_z),
+            Box::new(radius),
+            Box::new(theta),
+            Box::new(phi),
+            Box::new(image),
+        ];
+
+        // println!("theta: {}, phi: {}", theta_0 + theta_1, phi_0 + phi_1);
 
         // Launch the CUDA kernel
         match cuda_context.launch_kernel(&mut args, width, height) {
-            Ok(_) => println!("CUDA kernel launched successfully."),
+            Ok(_) => (),
             Err(e) => eprintln!("Failed to launch CUDA kernel: {}", e),
         }
 
