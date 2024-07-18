@@ -118,8 +118,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         // Update the texture with the new image data
         let image_arg = args.last().unwrap();
         if let Some(image_buffer) = image_arg.as_any().downcast_ref::<DeviceBuffer<u8>>() {
+            for i in 0..10 {
+                println!("{}: {}", i, image_buffer.get_host_data()[i]);
+            }
             texture.update(None, image_buffer.get_host_data(), (width * 3) as usize)?;
         }
+
+        // Drop all the args here
+        drop(args);
 
         canvas.copy(&texture, None, None)?;
 
@@ -153,6 +159,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         
         canvas.present();
     }
+
+    // Drop CUDA context explicitly to unload the module and free GPU memory
+    drop(cuda_context);
 
     Ok(())
 }

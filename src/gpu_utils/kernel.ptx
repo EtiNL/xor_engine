@@ -11,6 +11,13 @@
 .address_size 64
 
 	// .globl	computeSDF
+.extern .func  (.param .b32 func_retval0) vprintf
+(
+	.param .b64 vprintf_param_0,
+	.param .b64 vprintf_param_1
+)
+;
+.global .align 1 .b8 $str[24] = {80, 105, 120, 101, 108, 32, 40, 37, 100, 44, 32, 37, 100, 41, 58, 32, 105, 100, 120, 32, 37, 100, 10, 0};
 
 .visible .entry computeSDF(
 	.param .u32 computeSDF_param_0,
@@ -24,12 +31,17 @@
 	.param .u64 computeSDF_param_8
 )
 {
+	.local .align 8 .b8 	__local_depot0[16];
+	.reg .b64 	%SP;
+	.reg .b64 	%SPL;
 	.reg .pred 	%p<7>;
-	.reg .b16 	%rs<3>;
+	.reg .b16 	%rs<2>;
 	.reg .b32 	%r<15>;
-	.reg .b64 	%rd<5>;
+	.reg .b64 	%rd<9>;
 
 
+	mov.u64 	%SPL, __local_depot0;
+	cvta.local.u64 	%SP, %SPL;
 	ld.param.u32 	%r4, [computeSDF_param_0];
 	ld.param.u32 	%r5, [computeSDF_param_1];
 	ld.param.u64 	%rd1, [computeSDF_param_8];
@@ -39,30 +51,49 @@
 	mad.lo.s32 	%r1, %r7, %r6, %r8;
 	mov.u32 	%r9, %ntid.y;
 	mov.u32 	%r10, %ctaid.y;
-	mov.u32 	%r11, %tid.y;
-	mad.lo.s32 	%r2, %r10, %r9, %r11;
+	mul.lo.s32 	%r2, %r10, %r9;
 	setp.ge.s32 	%p1, %r1, %r4;
 	setp.ge.s32 	%p2, %r2, %r5;
 	or.pred  	%p3, %p1, %p2;
 	@%p3 bra 	$L__BB0_3;
 
-	mad.lo.s32 	%r12, %r2, %r4, %r1;
-	mul.lo.s32 	%r3, %r12, 3;
-	setp.lt.s32 	%p4, %r12, 0;
-	mul.lo.s32 	%r13, %r4, %r5;
-	mul.lo.s32 	%r14, %r13, 3;
-	setp.ge.s32 	%p5, %r3, %r14;
+	mad.lo.s32 	%r11, %r2, %r4, %r1;
+	mul.lo.s32 	%r3, %r11, 3;
+	setp.lt.s32 	%p4, %r11, 0;
+	mul.lo.s32 	%r12, %r4, %r5;
+	mul.lo.s32 	%r13, %r12, 3;
+	setp.ge.s32 	%p5, %r3, %r13;
 	or.pred  	%p6, %p4, %p5;
 	@%p6 bra 	$L__BB0_3;
 
-	cvt.s64.s32 	%rd2, %r3;
-	cvta.to.global.u64 	%rd3, %rd1;
-	add.s64 	%rd4, %rd3, %rd2;
-	mov.u16 	%rs1, 0;
-	st.global.u8 	[%rd4], %rs1;
-	mov.u16 	%rs2, 128;
-	st.global.u8 	[%rd4+1], %rs2;
-	st.global.u8 	[%rd4+2], %rs2;
+	add.u64 	%rd2, %SP, 0;
+	add.u64 	%rd3, %SPL, 0;
+	st.local.v2.u32 	[%rd3], {%r1, %r2};
+	st.local.u32 	[%rd3+8], %r3;
+	mov.u64 	%rd4, $str;
+	cvta.global.u64 	%rd5, %rd4;
+	{ // callseq 0, 0
+	.reg .b32 temp_param_reg;
+	.param .b64 param0;
+	st.param.b64 	[param0+0], %rd5;
+	.param .b64 param1;
+	st.param.b64 	[param1+0], %rd2;
+	.param .b32 retval0;
+	call.uni (retval0), 
+	vprintf, 
+	(
+	param0, 
+	param1
+	);
+	ld.param.b32 	%r14, [retval0+0];
+	} // callseq 0
+	cvt.s64.s32 	%rd6, %r3;
+	cvta.to.global.u64 	%rd7, %rd1;
+	add.s64 	%rd8, %rd7, %rd6;
+	mov.u16 	%rs1, 255;
+	st.global.u8 	[%rd8], %rs1;
+	st.global.u8 	[%rd8+1], %rs1;
+	st.global.u8 	[%rd8+2], %rs1;
 
 $L__BB0_3:
 	ret;

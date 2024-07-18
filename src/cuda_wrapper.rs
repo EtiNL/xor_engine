@@ -1,5 +1,5 @@
 use cuda_driver_sys::{
-    cuCtxCreate_v2, cuInit, cuLaunchKernel, cuMemAlloc_v2, cuMemcpyDtoH_v2, cuMemcpyHtoD_v2,
+    cuCtxCreate_v2, cuCtxSynchronize, cuInit, cuLaunchKernel, cuMemAlloc_v2, cuMemcpyDtoH_v2, cuMemcpyHtoD_v2,
     cuModuleGetFunction, cuModuleLoad, cuCtxDestroy_v2, cuModuleUnload, cuMemFree_v2,
     CUdeviceptr, CUcontext, CUfunction, CUmodule, CUresult, cudaError_enum::CUDA_SUCCESS,
 };
@@ -65,12 +65,10 @@ impl CudaContext {
                 params.push(ptr as *const CUdeviceptr as *mut std::ffi::c_void);
             }
 
-            // println!("Launching kernel with grid_dim: {:?}, block_dim: {:?}", grid_dim, block_dim);
-            // for (i, param) in params.iter().enumerate() {
-                // println!("Param {}: {:?}", i, param);
-            // }
-
-            // println!("finished loading params");
+            println!("Launching kernel with grid_dim: {:?}, block_dim: {:?}", grid_dim, block_dim);
+            for (i, param) in params.iter().enumerate() {
+                println!("Param {}: {:?}", i, param);
+            }
 
             let result = cuLaunchKernel(
                 self.function,
@@ -84,12 +82,19 @@ impl CudaContext {
                 return Err(Box::from(format!("cuLaunchKernel failed: {:?}", result)));
             }
 
+            // Ensure kernel execution is complete
+            let sync_result = cuCtxSynchronize();
+            if sync_result != CUDA_SUCCESS {
+                eprintln!("cuCtxSynchronize failed: {:?}", sync_result);
+                return Err(Box::from(format!("cuCtxSynchronize failed: {:?}", sync_result)));
+            }
+
             for arg in args.iter_mut() {
                 arg.copy_to_host();
             }
         }
         Ok(())
-    }      
+    }
 }
 
 impl Drop for CudaContext {
@@ -139,6 +144,8 @@ impl<T: 'static> KernelArg for DeviceBuffer<T> where T: Copy + 'static {
 
             let result = cuMemcpyHtoD_v2(self.device_ptr, self.host_data.as_ptr() as *const _, size);
             check_cuda_result(result, "cuMemcpyHtoD_v2").expect("Failed to copy memory to device");
+
+            println!("Allocated {} bytes on device at {:?}", size, self.device_ptr);
         }
     }
 
@@ -151,6 +158,8 @@ impl<T: 'static> KernelArg for DeviceBuffer<T> where T: Copy + 'static {
         unsafe {
             let result = cuMemcpyDtoH_v2(self.host_data.as_mut_ptr() as *mut _, self.device_ptr, size);
             check_cuda_result(result, "cuMemcpyDtoH_v2").expect("Failed to copy memory from device");
+
+            println!("Copied {} bytes from device at {:?}", size, self.device_ptr);
         }
     }
 
