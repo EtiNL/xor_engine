@@ -3,7 +3,7 @@
 #include <cmath>
 
 // CUDA kernel to compute depth map of a sphere
-extern "C" __global__ void computeDepthMap(int width, int height, float sphereX, float sphereY, float sphereZ, float radius, float angle, unsigned char *image) {
+extern "C" __global__ void computeDepthMap(int width, int height, float sphereX, float sphereY, float sphereZ, float radius, float theta, float phi, unsigned char *image) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
@@ -15,7 +15,7 @@ extern "C" __global__ void computeDepthMap(int width, int height, float sphereX,
         float ndc_y = (2.0f * y / height) - 1.0f;
 
         // Apply rotation based on angle
-        float rad = angle * M_PI / 180.0f;
+        float rad = theta * M_PI / 180.0f;
         float cos_a = cosf(rad);
         float sin_a = sinf(rad);
         float rotated_x = ndc_x * cos_a - ndc_y * sin_a;

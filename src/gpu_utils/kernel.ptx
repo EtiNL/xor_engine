@@ -21,7 +21,8 @@
 	.param .f32 computeDepthMap_param_4,
 	.param .f32 computeDepthMap_param_5,
 	.param .f32 computeDepthMap_param_6,
-	.param .u64 computeDepthMap_param_7
+	.param .f32 computeDepthMap_param_7,
+	.param .u64 computeDepthMap_param_8
 )
 {
 	.local .align 4 .b8 	__local_depot0[28];
@@ -44,7 +45,7 @@
 	ld.param.f32 	%f28, [computeDepthMap_param_4];
 	ld.param.f32 	%f29, [computeDepthMap_param_5];
 	ld.param.f32 	%f30, [computeDepthMap_param_6];
-	ld.param.u64 	%rd16, [computeDepthMap_param_7];
+	ld.param.u64 	%rd16, [computeDepthMap_param_8];
 	add.u64 	%rd17, %SP, 0;
 	add.u64 	%rd50, %SPL, 0;
 	mov.u32 	%r41, %ntid.x;

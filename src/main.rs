@@ -8,7 +8,7 @@ use std::error::Error;
 use std::ffi::c_void;
 use std::time::{Instant, Duration};
 
-use cuda_driver_sys::{cuMemAlloc_v2, cuMemFree_v2, cuMemcpyHtoD_v2, cuMemcpyDtoH_v2, CUdeviceptr, CUresult, cudaError_enum};
+use cuda_driver_sys::{cuMemAlloc_v2, cuMemFree_v2, cuMemcpyHtoD_v2, cuMemcpyDtoH_v2, CUdeviceptr};
 use cuda_wrapper::{CudaContext, dim3, check_cuda_result};
 
 
@@ -23,7 +23,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let height = 600u32;
 
     let window = video_subsystem
-        .window("Depth Map Renderer", width, height)
+        .window("xor Renderer", width, height)
         .position_centered()
         .build()
         .expect("Failed to create window");
@@ -62,7 +62,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut last_frame = Instant::now();
     let mut frame_count = 0;
     let mut fps = 0;
-    let mut angle = 0.0f32; // Angle controlled by mouse
+    let mut x_click = 0f32;
+    let mut y_click = 0f32;
+    let mut theta_0 = 0f32;
+    let mut phi_0 = 0f32;
+    let mut theta_1 = 0f32;
+    let mut phi_1 = 0f32;
     let mut mouse_down = false; // Track if mouse button is pressed
 
     'running: loop {
@@ -71,16 +76,20 @@ fn main() -> Result<(), Box<dyn Error>> {
                 Event::Quit { .. } => break 'running,
                 Event::MouseButtonDown { x, y, .. } => {
                     mouse_down = true;
-                    // Adjust angle based on mouse position
-                    angle = (x as f32 / width as f32) * 360.0;
+                    x_click = x as f32;
+                    y_click = y as f32;
                 },
                 Event::MouseButtonUp { .. } => {
                     mouse_down = false;
+                    theta_0 = theta_1;
+                    phi_0 = phi_1;
+                    theta_1 = 0f32;
+                    phi_1 = 0f32;
                 },
-                Event::MouseMotion { x, .. } => {
+                Event::MouseMotion { x, y, .. } => {
                     if mouse_down {
-                        // Adjust angle based on mouse position
-                        angle = (x as f32 / width as f32) * 360.0;
+                        phi_1 = phi_0 + (x_click - x as f32).atan();
+                        theta_1 = theta_0 + (y_click - y as f32).atan();
                     }
                 },
                 _ => {}
@@ -94,7 +103,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             &sphere_y as *const _ as *const c_void,
             &sphere_z as *const _ as *const c_void,
             &radius as *const _ as *const c_void,
-            &angle as *const _ as *const c_void,
+            &theta_1 as *const _ as *const c_void,
+            &phi_1 as *const _ as *const c_void,
             &d_image as *const _ as *const c_void,
         ];
 
