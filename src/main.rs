@@ -5,10 +5,12 @@ use sdl2::pixels::PixelFormatEnum;
 use sdl2::rect::Rect;
 use sdl2::render::{BlendMode, TextureQuery};
 use std::error::Error;
-use std::thread;
-use std::time::{Duration, Instant};
+use std::ffi::c_void;
+use std::time::{Instant, Duration};
 
-use cuda_wrapper::CudaContext;
+use cuda_driver_sys::{cuMemAlloc_v2, cuMemFree_v2, cuMemcpyHtoD_v2, cuMemcpyDtoH_v2, CUdeviceptr, CUresult, cudaError_enum};
+use cuda_wrapper::{CudaContext, dim3, check_cuda_result};
+
 
 fn main() -> Result<(), Box<dyn Error>> {
     // Initialize the SDL2 context
@@ -33,13 +35,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut sdl_event_pump = sdl_context.event_pump()?;
 
     // Initialize CUDA context
-    let cuda_context = CudaContext::new("./src/gpu_utils/kernel.ptx")?;
+    let cuda_context = CudaContext::new("./src/gpu_utils/kernel.ptx", "computeDepthMap")?;
 
     let sphere_x = 0.0f32;
     let sphere_y = 10.0f32;
     let sphere_z = 0.0f32;
     let radius = 5.0f32;
     let mut image = vec![0u8; (width * height * 3) as usize];
+
+    // Allocate device memory for the image
+    let mut d_image: CUdeviceptr = 0;
+    unsafe {
+        check_cuda_result(cuMemAlloc_v2(&mut d_image, (width * height * 3) as usize), "cuMemAlloc_v2")?;
+        check_cuda_result(cuMemcpyHtoD_v2(d_image, image.as_ptr() as *const _, (width * height * 3) as usize), "cuMemcpyHtoD_v2")?;
+    }
 
     // Load a font
     let font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"; // Replace with a path to a valid TTF file
@@ -78,7 +87,29 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
 
-        cuda_context.launch_kernel(width as i32, height as i32, sphere_x, sphere_y, sphere_z, radius, angle, &mut image);
+        let params = vec![
+            &width as *const _ as *const c_void,
+            &height as *const _ as *const c_void,
+            &sphere_x as *const _ as *const c_void,
+            &sphere_y as *const _ as *const c_void,
+            &sphere_z as *const _ as *const c_void,
+            &radius as *const _ as *const c_void,
+            &angle as *const _ as *const c_void,
+            &d_image as *const _ as *const c_void,
+        ];
+
+        let grid_dim = dim3 {
+            x: ((width + 15) / 16) as u32,
+            y: ((height + 15) / 16) as u32,
+            z: 1,
+        };
+        let block_dim = dim3 { x: 16, y: 16, z: 1 };
+
+        cuda_context.launch_kernel(grid_dim, block_dim, params)?;
+
+        unsafe {
+            check_cuda_result(cuMemcpyDtoH_v2(image.as_mut_ptr() as *mut _, d_image, (width * height * 3) as usize), "cuMemcpyDtoH_v2")?;
+        }
 
         texture.update(None, &image, (width * 3) as usize)?;
         canvas.copy(&texture, None, None)?;
@@ -114,6 +145,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         canvas.present();
 
         //thread::sleep(Duration::from_millis(16)); // ~60 FPS
+    }
+
+    // Free device memory
+    unsafe {
+        check_cuda_result(cuMemFree_v2(d_image), "cuMemFree_v2")?;
     }
 
     Ok(())

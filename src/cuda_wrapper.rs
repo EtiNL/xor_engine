@@ -1,13 +1,13 @@
 use cuda_driver_sys::*;
 use std::ffi::CString;
 use std::ptr::null_mut;
+use std::error::Error;
 
-// Define the dim3 structure
 #[repr(C)]
-struct dim3 {
-    x: u32,
-    y: u32,
-    z: u32,
+pub struct dim3 {
+    pub x: u32,
+    pub y: u32,
+    pub z: u32,
 }
 
 pub struct CudaContext {
@@ -16,99 +16,52 @@ pub struct CudaContext {
     function: CUfunction,
 }
 
+pub fn check_cuda_result(result: CUresult, msg: &str) -> Result<(), Box<dyn Error>> {
+    if result != cudaError_enum::CUDA_SUCCESS {
+        return Err(Box::from(format!("{} failed: {:?}", msg, result)));
+    }
+    Ok(())
+}
+
 impl CudaContext {
-    pub fn new(ptx_path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(ptx_path: &str, kernel_name: &str) -> Result<Self, Box<dyn Error>> {
         unsafe {
-            // Initialize the CUDA driver
-            let result = cuInit(0);
-            if result != CUresult::CUDA_SUCCESS {
-                eprintln!("cuInit failed: {:?}", result);
-                return Err(Box::from("cuInit failed"));
-            }
+            check_cuda_result(cuInit(0), "cuInit")?;
 
-            // Create a context
             let mut context = null_mut();
-            let result = cuCtxCreate_v2(&mut context, 0, 0);
-            if result != CUresult::CUDA_SUCCESS {
-                eprintln!("cuCtxCreate_v2 failed: {:?}", result);
-                return Err(Box::from("cuCtxCreate_v2 failed"));
-            }
+            check_cuda_result(cuCtxCreate_v2(&mut context, 0, 0), "cuCtxCreate_v2")?;
 
-            // Load the module
             let mut module = null_mut();
             let ptx_cstr = CString::new(ptx_path)?;
-            let result = cuModuleLoad(&mut module, ptx_cstr.as_ptr());
-            if result != CUresult::CUDA_SUCCESS {
-                eprintln!("cuModuleLoad failed: {:?}", result);
-                return Err(Box::from("cuModuleLoad failed"));
-            }
+            check_cuda_result(cuModuleLoad(&mut module, ptx_cstr.as_ptr()), "cuModuleLoad")?;
 
-            // Get the function
             let mut function = null_mut();
-            let kernel_name = CString::new("computeDepthMap")?;
-            let result = cuModuleGetFunction(&mut function, module, kernel_name.as_ptr());
-            if result != CUresult::CUDA_SUCCESS {
-                eprintln!("cuModuleGetFunction failed: {:?}", result);
-                return Err(Box::from("cuModuleGetFunction failed"));
-            }
+            let kernel_cstr = CString::new(kernel_name)?;
+            check_cuda_result(cuModuleGetFunction(&mut function, module, kernel_cstr.as_ptr()), "cuModuleGetFunction")?;
 
             Ok(Self { context, module, function })
         }
     }
 
-    pub fn launch_kernel(&self, width: i32, height: i32, sphere_x: f32, sphere_y: f32, sphere_z: f32, radius: f32, angle: f32, image: &mut [u8]) {
-        let grid_dim = dim3 {
-            x: ((width + 15) / 16) as u32,
-            y: ((height + 15) / 16) as u32,
-            z: 1,
-        };
-        let block_dim = dim3 { x: 16, y: 16, z: 1 };
-    
+    pub fn launch_kernel(
+        &self,
+        grid_dim: dim3,
+        block_dim: dim3,
+        params: Vec<*const std::ffi::c_void>
+    ) -> Result<(), Box<dyn Error>> {
         unsafe {
-            let mut d_image: CUdeviceptr = 0;
-            let result = cuMemAlloc_v2(&mut d_image, (width * height * 3) as usize);
-            if result != CUresult::CUDA_SUCCESS {
-                eprintln!("cuMemAlloc_v2 failed: {:?}", result);
-                return;
-            }
-    
-            let result = cuMemcpyHtoD_v2(d_image, image.as_ptr() as *const _, (width * height * 3) as usize);
-            if result != CUresult::CUDA_SUCCESS {
-                eprintln!("cuMemcpyHtoD_v2 failed: {:?}", result);
-                cuMemFree_v2(d_image);
-                return;
-            }
-    
-            let params = [
-                &width as *const _ as *const std::ffi::c_void,
-                &height as *const _ as *const std::ffi::c_void,
-                &sphere_x as *const _ as *const std::ffi::c_void,
-                &sphere_y as *const _ as *const std::ffi::c_void,
-                &sphere_z as *const _ as *const std::ffi::c_void,
-                &radius as *const _ as *const std::ffi::c_void,
-                &angle as *const _ as *const std::ffi::c_void,
-                &d_image as *const _ as *const std::ffi::c_void,
-            ];
-    
-            let result = cuLaunchKernel(
+            check_cuda_result(cuLaunchKernel(
                 self.function,
                 grid_dim.x, grid_dim.y, grid_dim.z,
                 block_dim.x, block_dim.y, block_dim.z,
                 0, null_mut(), params.as_ptr() as *mut _, null_mut(),
-            );
-    
-            if result != CUresult::CUDA_SUCCESS {
-                eprintln!("cuLaunchKernel failed: {:?}", result);
-            }
-    
-            let result = cuMemcpyDtoH_v2(image.as_mut_ptr() as *mut _, d_image, (width * height * 3) as usize);
-            if result != CUresult::CUDA_SUCCESS {
-                eprintln!("cuMemcpyDtoH_v2 failed: {:?}", result);
-            }
-    
-            cuMemFree_v2(d_image);
+            ), "cuLaunchKernel")?;
+
+            check_cuda_result(cuCtxSynchronize(), "cuCtxSynchronize")?;
         }
-    }    
+
+        Ok(())
+    }
 }
 
 impl Drop for CudaContext {
