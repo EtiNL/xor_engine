@@ -11,14 +11,12 @@ use std::time::{Instant, Duration};
 use cuda_driver_sys::{cuMemAlloc_v2, cuMemFree_v2, cuMemcpyHtoD_v2, cuMemcpyDtoH_v2, CUdeviceptr};
 use cuda_wrapper::{CudaContext, dim3, check_cuda_result};
 
-
 fn main() -> Result<(), Box<dyn Error>> {
     // Initialize the SDL2 context
     let sdl_context = sdl2::init()?;
     let video_subsystem = sdl_context.video()?;
     let ttf_context = sdl2::ttf::init().map_err(|e| e.to_string())?;
 
-    // Customize screen size
     let width = 800u32;
     let height = 600u32;
 
@@ -34,24 +32,29 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut sdl_event_pump = sdl_context.event_pump()?;
 
-    // Initialize CUDA context
-    let cuda_context = CudaContext::new("./src/gpu_utils/kernel.ptx", "computeDepthMap")?;
+    // Initialize CUDA context and load kernels
+    let mut cuda_context = CudaContext::new("./src/gpu_utils/kernel.ptx")?;
+    cuda_context.load_kernel("computeDepthMap")?;
+    cuda_context.load_kernel("generate_image")?;
+
+    // Create CUDA streams
+    cuda_context.create_stream("stream1")?;
+    cuda_context.create_stream("stream2")?;
+
 
     let sphere_x = 0.0f32;
     let sphere_y = 10.0f32;
     let sphere_z = 0.0f32;
     let radius = 5.0f32;
     let mut image = vec![0u8; (width * height * 3) as usize];
-
-    // Allocate device memory for the image
     let mut d_image: CUdeviceptr = 0;
+
     unsafe {
         check_cuda_result(cuMemAlloc_v2(&mut d_image, (width * height * 3) as usize), "cuMemAlloc_v2")?;
         check_cuda_result(cuMemcpyHtoD_v2(d_image, image.as_ptr() as *const _, (width * height * 3) as usize), "cuMemcpyHtoD_v2")?;
     }
 
-    // Load a font
-    let font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"; // Replace with a path to a valid TTF file
+    let font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
     let font = ttf_context.load_font(font_path, 16)
         .map_err(|e| {
             eprintln!("Failed to load font: {}", e);
@@ -62,13 +65,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut last_frame = Instant::now();
     let mut frame_count = 0;
     let mut fps = 0;
+
     let mut x_click = 0f32;
     let mut y_click = 0f32;
     let mut theta_0 = std::f32::consts::PI / 2.0;
     let mut phi_0 = std::f32::consts::PI / 2.0;
     let mut theta_1 = 0f32;
     let mut phi_1 = 0f32;
-    let mut mouse_down = false; // Track if mouse button is pressed
+    let mut mouse_down = false;
 
     'running: loop {
         for event in sdl_event_pump.poll_iter() {
@@ -101,7 +105,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
 
-        let params = vec![
+        let params_sdf = vec![
             &width as *const _ as *const c_void,
             &height as *const _ as *const c_void,
             &sphere_x as *const _ as *const c_void,
@@ -120,7 +124,19 @@ fn main() -> Result<(), Box<dyn Error>> {
         };
         let block_dim = dim3 { x: 16, y: 16, z: 1 };
 
-        cuda_context.launch_kernel(grid_dim, block_dim, params)?;
+        let params2 = vec![
+            &width as *const _ as *const c_void,
+            &height as *const _ as *const c_void,
+            &400 as *const _ as *const c_void, // mouse_x
+            &300 as *const _ as *const c_void, // mouse_y
+            &d_image as *const _ as *const c_void,
+        ];
+
+        cuda_context.launch_kernel("computeDepthMap", grid_dim, block_dim, params1, "stream1")?;
+        cuda_context.launch_kernel("generate_image", grid_dim, block_dim, params2, "stream2")?;
+
+        cuda_context.synchronize("stream1")?;
+        cuda_context.synchronize("stream2")?;
 
         unsafe {
             check_cuda_result(cuMemcpyDtoH_v2(image.as_mut_ptr() as *mut _, d_image, (width * height * 3) as usize), "cuMemcpyDtoH_v2")?;
