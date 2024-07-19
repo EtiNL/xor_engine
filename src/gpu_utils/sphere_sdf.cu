@@ -10,21 +10,9 @@ extern "C" __global__ void computeDepthMap(int width, int height, float sphereX,
     if (x < width && y < height) {
         int idx = (y * width + x) * 3;
 
-        // Normalized device coordinates
-        float ndc_x = (2.0f * x / width) - 1.0f;
-        float ndc_y = (2.0f * y / height) - 1.0f;
-
-        // Apply rotation based on angle
-        float rad = theta * M_PI / 180.0f;
-        float cos_a = cosf(rad);
-        float sin_a = sinf(rad);
-        float rotated_x = ndc_x * cos_a - ndc_y * sin_a;
-        float rotated_y = ndc_x * sin_a + ndc_y * cos_a;
-
-        // Assuming a simple orthographic projection
-        float screen_x = rotated_x * 10.0f; // Scale to screen size
-        float screen_y = rotated_y * 10.0f; // Scale to screen size
-        float screen_z = 0.0f;
+        float screen_x = sinf(theta) * cosf(phi) + (x - width / 2.0f);
+        float screen_y = sinf(theta) * sinf(phi) + (y - height / 2.0f);
+        float screen_z = cosf(theta);
 
         // Compute distance from point on screen to sphere center
         float dx = screen_x - sphereX;
@@ -34,10 +22,9 @@ extern "C" __global__ void computeDepthMap(int width, int height, float sphereX,
 
         // Compute the SDF value and convert to depth map value
         float sdf = distance - radius;
-        float depth = fmaxf(0.0f, radius - fabs(sdf));
 
         // Map depth to grayscale value (0-255)
-        unsigned char grayscale = static_cast<unsigned char>(depth / radius * 255.0f);
+        unsigned char grayscale = static_cast<unsigned char>(sdf/400.0 * 255.0f);
 
         // Set the color based on depth
         image[idx] = grayscale;        // Red channel

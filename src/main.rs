@@ -64,8 +64,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut fps = 0;
     let mut x_click = 0f32;
     let mut y_click = 0f32;
-    let mut theta_0 = 0f32;
-    let mut phi_0 = 0f32;
+    let mut theta_0 = std::f32::consts::PI / 2.0;
+    let mut phi_0 = std::f32::consts::PI / 2.0;
     let mut theta_1 = 0f32;
     let mut phi_1 = 0f32;
     let mut mouse_down = false; // Track if mouse button is pressed
@@ -75,21 +75,26 @@ fn main() -> Result<(), Box<dyn Error>> {
             match event {
                 Event::Quit { .. } => break 'running,
                 Event::MouseButtonDown { x, y, .. } => {
-                    mouse_down = true;
-                    x_click = x as f32;
-                    y_click = y as f32;
+                    if mouse_down == false {
+                        mouse_down = true;
+                        x_click = x as f32;
+                        y_click = y as f32;
+                    }
                 },
                 Event::MouseButtonUp { .. } => {
-                    mouse_down = false;
-                    theta_0 = theta_1;
-                    phi_0 = phi_1;
-                    theta_1 = 0f32;
-                    phi_1 = 0f32;
+                    if mouse_down {
+                        mouse_down = false;
+                        theta_0 = theta_1;
+                        phi_0 = phi_1;
+                        theta_1 = 0f32;
+                        phi_1 = 0f32;
+                    }
                 },
                 Event::MouseMotion { x, y, .. } => {
                     if mouse_down {
                         phi_1 = phi_0 + (x_click - x as f32).atan();
                         theta_1 = theta_0 + (y_click - y as f32).atan();
+                        println!("phi: {}, theta: {}", phi_1, theta_1)
                     }
                 },
                 _ => {}
