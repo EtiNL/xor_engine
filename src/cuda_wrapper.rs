@@ -105,45 +105,26 @@ impl CudaContext {
         Ok(())
     }
 
-    // Additional method for workflow execution
-    pub fn execute_workflow(
-        &self,
-        grid_dim: dim3,
-        block_dim: dim3,
-        initial_params: Vec<*const std::ffi::c_void>,
-        convergence_threshold: f32,
-    ) -> Result<(), Box<dyn Error>> {
-        // Launch kernel 1
-        self.launch_kernel("kernel1", grid_dim, block_dim, initial_params.clone(), "stream1")?;
-        self.synchronize("stream1")?;
-
-        let mut kernel2_params = initial_params.clone();
-        let mut kernel3_params = initial_params.clone();
-
-        loop {
-            // Launch kernels 2 and 3 concurrently
-            self.launch_kernel("kernel2", grid_dim, block_dim, kernel2_params.clone(), "stream2")?;
-            self.launch_kernel("kernel3", grid_dim, block_dim, kernel3_params.clone(), "stream3")?;
-
-            self.synchronize("stream2")?;
-            self.synchronize("stream3")?;
-
-            // Collect results from kernels 2 and 3
-            // Update kernel2_params and kernel3_params as necessary
-
-            // Launch kernel 4
-            self.launch_kernel("kernel4", grid_dim, block_dim, initial_params.clone(), "stream4")?;
-            self.synchronize("stream4")?;
-
-            // Check for convergence
-            let convergence_result = // Retrieve the result from kernel 4
-            if convergence_result < convergence_threshold {
-                break;
-            }
-
-            // Update kernel2_params and kernel3_params based on results from kernel 4
+    pub fn allocate_tensor<T>(image: &[T], size: usize) -> Result<CUdeviceptr, Box<dyn Error>> {
+        let mut d_ptr: CUdeviceptr = 0;
+        unsafe {
+            check_cuda_result(cuMemAlloc_v2(&mut d_ptr, size), "cuMemAlloc_v2")?;
+            check_cuda_result(cuMemcpyHtoD_v2(d_ptr, image.as_ptr() as *const _, size), "cuMemcpyHtoD_v2")?;
         }
+        Ok(d_ptr)
+    }
 
+    pub fn free_tensor(d_ptr: CUdeviceptr) -> Result<(), Box<dyn Error>> {
+        unsafe {
+            check_cuda_result(cuMemFree_v2(d_ptr), "cuMemFree_v2")?;
+        }
+        Ok(())
+    }
+
+    pub fn retrieve_tensor<T>(&self, d_ptr: CUdeviceptr, image: &mut [T], size: usize) -> Result<(), Box<dyn Error>> {
+        unsafe {
+            check_cuda_result(cuMemcpyDtoH_v2(image.as_mut_ptr() as *mut _, d_ptr, size), "cuMemcpyDtoH_v2")?;
+        }
         Ok(())
     }
 }

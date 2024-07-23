@@ -1,4 +1,5 @@
 mod cuda_wrapper;
+mod dynamic_computation_graph;
 
 use sdl2::event::Event;
 use sdl2::pixels::PixelFormatEnum;
@@ -8,8 +9,8 @@ use std::error::Error;
 use std::ffi::c_void;
 use std::time::{Instant, Duration};
 
-use cuda_driver_sys::{cuMemAlloc_v2, cuMemFree_v2, cuMemcpyHtoD_v2, cuMemcpyDtoH_v2, CUdeviceptr};
-use cuda_wrapper::{CudaContext, dim3, check_cuda_result};
+use cuda_wrapper::{CudaContext, dim3};
+use dynamic_computation_graph::{ComputationGraph, Operation, OperationType};
 
 fn main() -> Result<(), Box<dyn Error>> {
     // Initialize the SDL2 context
@@ -34,28 +35,16 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Initialize CUDA context and load kernels
     let mut cuda_context = CudaContext::new("./src/gpu_utils/kernel.ptx")?;
-    cuda_context.load_kernel("kernel1")?;
-    cuda_context.load_kernel("kernel2")?;
-    cuda_context.load_kernel("kernel3")?;
-    cuda_context.load_kernel("kernel4")?;
+    cuda_context.load_kernel("computeDepthMap")?;
+    cuda_context.load_kernel("generate_image")?;
 
     // Create CUDA streams
     cuda_context.create_stream("stream1")?;
     cuda_context.create_stream("stream2")?;
-    cuda_context.create_stream("stream3")?;
-    cuda_context.create_stream("stream4")?;
 
-    let sphere_x = 0.0f32;
-    let sphere_y = 10.0f32;
-    let sphere_z = 0.0f32;
-    let radius = 5.0f32;
-    let mut image = vec![0u8; (width * height * 3) as usize];
-    let mut d_image: CUdeviceptr = 0;
-
-    unsafe {
-        check_cuda_result(cuMemAlloc_v2(&mut d_image, (width * height * 3) as usize), "cuMemAlloc_v2")?;
-        check_cuda_result(cuMemcpyHtoD_v2(d_image, image.as_ptr() as *const _, (width * height * 3) as usize), "cuMemcpyHtoD_v2")?;
-    }
+    // Allocate GPU memory
+    let mut image: Vec<u8> = vec![0u8; (width * height * 3) as usize];
+    let d_image = cuda_context.allocate_tensor(&image, (width * height * 3) as usize)?;
 
     let font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
     let font = ttf_context.load_font(font_path, 16)
@@ -64,10 +53,13 @@ fn main() -> Result<(), Box<dyn Error>> {
             e.to_string()
         })?;
 
-    // Main loop
-    let mut last_frame = Instant::now();
-    let mut frame_count = 0;
-    let mut fps = 0;
+    // Create and configure computation graph
+    let mut graph = ComputationGraph::new(cuda_context);
+
+    let sphere_x = 0.0f32;
+    let sphere_y = 10.0f32;
+    let sphere_z = 0.0f32;
+    let radius = 5.0f32;
 
     let mut x_click = 0f32;
     let mut y_click = 0f32;
@@ -77,12 +69,24 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut phi_1 = 0f32;
     let mut mouse_down = false;
 
+    let grid_dim = dim3 {
+        x: ((width + 15) / 16) as u32,
+        y: ((height + 15) / 16) as u32,
+        z: 1,
+    };
+    let block_dim = dim3 { x: 16, y: 16, z: 1 };
+
+    // Calculate FPS
+    let mut last_frame = Instant::now();
+    let mut frame_count = 0;
+    let mut fps = 0;
+
     'running: loop {
         for event in sdl_event_pump.poll_iter() {
             match event {
                 Event::Quit { .. } => break 'running,
                 Event::MouseButtonDown { x, y, .. } => {
-                    if mouse_down == false {
+                    if !mouse_down {
                         mouse_down = true;
                         x_click = x as f32;
                         y_click = y as f32;
@@ -107,25 +111,18 @@ fn main() -> Result<(), Box<dyn Error>> {
                 _ => {}
             }
 
-
+            // Parameters for the CUDA kernels
             let params_sdf = vec![
-            &width as *const _ as *const c_void,
-            &height as *const _ as *const c_void,
-            &sphere_x as *const _ as *const c_void,
-            &sphere_y as *const _ as *const c_void,
-            &sphere_z as *const _ as *const c_void,
-            &radius as *const _ as *const c_void,
-            &theta_1 as *const _ as *const c_void,
-            &phi_1 as *const _ as *const c_void,
-            &d_image as *const _ as *const c_void,
+                &width as *const _ as *const c_void,
+                &height as *const _ as *const c_void,
+                &sphere_x as *const _ as *const c_void,
+                &sphere_y as *const _ as *const c_void,
+                &sphere_z as *const _ as *const c_void,
+                &radius as *const _ as *const c_void,
+                &theta_1 as *const _ as *const c_void,
+                &phi_1 as *const _ as *const c_void,
+                &d_image as *const _ as *const c_void,
             ];
-
-            let grid_dim = dim3 {
-                x: ((width + 15) / 16) as u32,
-                y: ((height + 15) / 16) as u32,
-                z: 1,
-            };
-            let block_dim = dim3 { x: 16, y: 16, z: 1 };
 
             let params2 = vec![
                 &width as *const _ as *const c_void,
@@ -135,20 +132,24 @@ fn main() -> Result<(), Box<dyn Error>> {
                 &d_image as *const _ as *const c_void,
             ];
 
-            cuda_context.launch_kernel("computeDepthMap", grid_dim, block_dim, params1, "stream1")?;
-            cuda_context.launch_kernel("generate_image", grid_dim, block_dim, params2, "stream2")?;
+            // Reset the graph for each frame
+            graph.clear_operations();
 
-            cuda_context.synchronize("stream1")?;
-            cuda_context.synchronize("stream2")?;
+            // Add operations to the graph
+            graph.add_operation(OperationType::Kernel("computeDepthMap".to_string()), params_sdf.clone(), None);
+            graph.add_operation(OperationType::Kernel("generate_image".to_string()), params2.clone(), None);
 
-            unsafe {
-                check_cuda_result(cuMemcpyDtoH_v2(image.as_mut_ptr() as *mut _, d_image, (width * height * 3) as usize), "cuMemcpyDtoH_v2")?;
-            }
+            // Execute the computation graph
+            graph.execute(grid_dim, block_dim)?;
 
+            // Copy the result from GPU to CPU memory
+            cuda_context.retrieve_tensor(d_image, &mut image, (width * height * 3) as usize)?;
+
+            // Update texture with the new image
             texture.update(None, &image, (width * 3) as usize)?;
             canvas.copy(&texture, None, None)?;
 
-            // Calculate FPS
+
             frame_count += 1;
             if last_frame.elapsed() >= Duration::from_secs(1) {
                 fps = frame_count;
@@ -159,23 +160,23 @@ fn main() -> Result<(), Box<dyn Error>> {
             // Render FPS text
             let fps_text = format!("FPS: {}", fps);
             let surface = font.render(&fps_text)
-                            .blended(sdl2::pixels::Color::RGBA(255, 0, 255, 255))
-                            .map_err(|e| {
-                                eprintln!("Failed to render text surface: {}", e);
-                                e.to_string()
-                            })?;
+                .blended(sdl2::pixels::Color::RGBA(255, 0, 255, 255))
+                .map_err(|e| {
+                    eprintln!("Failed to render text surface: {}", e);
+                    e.to_string()
+                })?;
             let texture = texture_creator.create_texture_from_surface(&surface)
-                                        .map_err(|e| {
-                                            eprintln!("Failed to create texture from surface: {}", e);
-                                            e.to_string()
-                                        })?;
-            
+                .map_err(|e| {
+                    eprintln!("Failed to create texture from surface: {}", e);
+                    e.to_string()
+                })?;
+
             let TextureQuery { width, height, .. } = texture.query();
             let target = Rect::new(128 - width as i32 - 10, 10, width, height);
-            
+
             canvas.set_blend_mode(BlendMode::Blend);
             canvas.copy(&texture, None, Some(target))?;
-            
+
             canvas.present();
 
             //thread::sleep(Duration::from_millis(16)); // ~60 FPS
@@ -183,9 +184,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // Free device memory
-    unsafe {
-        check_cuda_result(cuMemFree_v2(d_image), "cuMemFree_v2")?;
-    }
+    cuda_context.free_tensor(d_image)?;
 
     Ok(())
 }
