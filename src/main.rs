@@ -8,9 +8,10 @@ use sdl2::render::{BlendMode, TextureQuery};
 use std::error::Error;
 use std::ffi::c_void;
 use std::time::{Instant, Duration};
+use std::thread;
 
 use cuda_wrapper::{CudaContext, dim3};
-use dynamic_computation_graph::{ComputationGraph, OperationType}; // Remove Operation if not used
+use dynamic_computation_graph::{ComputationGraph, OperationType};
 
 fn main() -> Result<(), Box<dyn Error>> {
     // Initialize the SDL2 context
