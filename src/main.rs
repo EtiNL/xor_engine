@@ -43,7 +43,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Allocate GPU memory
     let mut image: Vec<u8> = vec![0u8; (width * height * 3) as usize];
-    let d_image = CudaContext::allocate_tensor(&image, (width * height * 3) as usize)?; // Use associated function syntax
+    let d_image = CudaContext::allocate_tensor(&image, (width * height * 3) as usize)?;
 
     let font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
     let font = ttf_context.load_font(font_path, 16)
@@ -124,11 +124,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             // ];
 
             let params2 = vec![
-                &width as *const _ as *const c_void,
-                &height as *const _ as *const c_void,
-                &x_click as *const _ as *const c_void, // mouse_x
-                &y_click as *const _ as *const c_void, // mouse_y
-                &d_image as *const _ as *const c_void,
+                &width as *const _ as *const f32, // Change c_void to f32
+                &height as *const _ as *const f32, // Change c_void to f32
+                &x_click as *const _ as *const f32, // mouse_x
+                &y_click as *const _ as *const f32, // mouse_y
+                &d_image as *const _ as *const f32, // Change c_void to f32
             ];
 
             // Reset the graph for each frame

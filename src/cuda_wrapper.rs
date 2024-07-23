@@ -5,6 +5,7 @@ use std::ptr::null_mut;
 use std::error::Error;
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct dim3 {
     pub x: u32,
     pub y: u32,
