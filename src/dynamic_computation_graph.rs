@@ -2,12 +2,12 @@ use crate::cuda_wrapper::{CudaContext, dim3};
 use std::ffi::c_void;
 use std::error::Error;
 
-enum OperationType {
+pub enum OperationType {
     Kernel(String),
     Conditional(Box<dyn Fn() -> bool>, Vec<Operation>),
 }
 
-struct Operation {
+pub struct Operation {
     op_type: OperationType,
     inputs: Vec<*mut f32>,
     output: Option<*mut f32>,
@@ -62,5 +62,9 @@ impl ComputationGraph {
             self.cuda_context.synchronize("stream1")?;
         }
         Ok(())
+    }
+    
+    pub fn clear_operations(&mut self) {
+        self.operations.clear();
     }
 }

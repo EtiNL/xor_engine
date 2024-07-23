@@ -35,7 +35,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Initialize CUDA context and load kernels
     let mut cuda_context = CudaContext::new("./src/gpu_utils/kernel.ptx")?;
-    cuda_context.load_kernel("computeDepthMap")?;
     cuda_context.load_kernel("generate_image")?;
 
     // Create CUDA streams
@@ -112,23 +111,23 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
 
             // Parameters for the CUDA kernels
-            let params_sdf = vec![
-                &width as *const _ as *const c_void,
-                &height as *const _ as *const c_void,
-                &sphere_x as *const _ as *const c_void,
-                &sphere_y as *const _ as *const c_void,
-                &sphere_z as *const _ as *const c_void,
-                &radius as *const _ as *const c_void,
-                &theta_1 as *const _ as *const c_void,
-                &phi_1 as *const _ as *const c_void,
-                &d_image as *const _ as *const c_void,
-            ];
+            // let params_sdf = vec![
+            //     &width as *const _ as *const c_void,
+            //     &height as *const _ as *const c_void,
+            //     &sphere_x as *const _ as *const c_void,
+            //     &sphere_y as *const _ as *const c_void,
+            //     &sphere_z as *const _ as *const c_void,
+            //     &radius as *const _ as *const c_void,
+            //     &theta_1 as *const _ as *const c_void,
+            //     &phi_1 as *const _ as *const c_void,
+            //     &d_image as *const _ as *const c_void,
+            // ];
 
             let params2 = vec![
                 &width as *const _ as *const c_void,
                 &height as *const _ as *const c_void,
-                &400 as *const _ as *const c_void, // mouse_x
-                &300 as *const _ as *const c_void, // mouse_y
+                &x_click as *const _ as *const c_void, // mouse_x
+                &y_click as *const _ as *const c_void, // mouse_y
                 &d_image as *const _ as *const c_void,
             ];
 
@@ -136,7 +135,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             graph.clear_operations();
 
             // Add operations to the graph
-            graph.add_operation(OperationType::Kernel("computeDepthMap".to_string()), params_sdf.clone(), None);
+            // graph.add_operation(OperationType::Kernel("computeDepthMap".to_string()), params_sdf.clone(), None);
             graph.add_operation(OperationType::Kernel("generate_image".to_string()), params2.clone(), None);
 
             // Execute the computation graph

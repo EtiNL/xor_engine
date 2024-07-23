@@ -133,7 +133,7 @@ impl Drop for CudaContext {
     fn drop(&mut self) {
         unsafe {
             for &stream in self.streams.values() {
-                cuStreamDestroy(stream);
+                cuStreamDestroy_v2(stream);
             }
             cuModuleUnload(self.module);
             cuCtxDestroy_v2(self.context);
