@@ -5,7 +5,7 @@ fn main() {
     let status = Command::new("nvcc")
         .args(&[
             "--ptx",
-            "src/gpu_utils/sphere_sdf.cu",
+            "src/gpu_utils/kernel.cu",
             "-o",
             "src/gpu_utils/kernel.ptx",
         ])

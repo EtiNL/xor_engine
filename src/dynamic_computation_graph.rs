@@ -13,13 +13,13 @@ pub struct Operation {
     output: Option<*mut f32>,
 }
 
-pub struct ComputationGraph {
+pub struct ComputationGraph<'a> {
     operations: Vec<Operation>,
-    cuda_context: CudaContext,
+    cuda_context: &'a CudaContext,
 }
 
-impl ComputationGraph {
-    pub fn new(cuda_context: CudaContext) -> Self {
+impl<'a> ComputationGraph<'a> {
+    pub fn new(cuda_context: &'a CudaContext) -> Self {
         ComputationGraph {
             operations: Vec::new(),
             cuda_context,

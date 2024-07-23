@@ -36,6 +36,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Initialize CUDA context and load kernels
     let mut cuda_context = CudaContext::new("./src/gpu_utils/kernel.ptx")?;
     cuda_context.load_kernel("generate_image")?;
+    cuda_context.load_kernel("draw_circle")?;
 
     // Create CUDA streams
     cuda_context.create_stream("stream1")?;
@@ -53,7 +54,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         })?;
 
     // Create and configure computation graph
-    let mut graph = ComputationGraph::new(cuda_context);
+    let mut graph = ComputationGraph::new(&cuda_context);
 
     let sphere_x = 0.0f32;
     let sphere_y = 10.0f32;
@@ -85,7 +86,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             match event {
                 Event::Quit { .. } => break 'running,
                 Event::MouseButtonDown { x, y, .. } => {
-                    if !mouse_down {
+                    if (!mouse_down) {
                         mouse_down = true;
                         x_click = x as f32;
                         y_click = y as f32;
@@ -104,80 +105,90 @@ fn main() -> Result<(), Box<dyn Error>> {
                     if mouse_down {
                         phi_1 = phi_0 + (x_click - x as f32).atan();
                         theta_1 = theta_0 + (y_click - y as f32).atan();
-                        println!("phi: {}, theta: {}", phi_1, theta_1)
+                        // println!("phi: {}, theta: {}", phi_1, theta_1)
+                        x_click = x as f32;
+                        y_click = y as f32;
+                        println!("x: {}, y: {}", x, y)
                     }
                 },
                 _ => {}
             }
-
-            // Parameters for the CUDA kernels
-            // let params_sdf = vec![
-            //     &width as *const _ as *const c_void,
-            //     &height as *const _ as *const c_void,
-            //     &sphere_x as *const _ as *const c_void,
-            //     &sphere_y as *const _ as *const c_void,
-            //     &sphere_z as *const _ as *const c_void,
-            //     &radius as *const _ as *const c_void,
-            //     &theta_1 as *const _ as *const c_void,
-            //     &phi_1 as *const _ as *const c_void,
-            //     &d_image as *const _ as *const c_void,
-            // ];
-
-            let params2 = vec![
-                &width as *const _ as *const f32, // Change c_void to f32
-                &height as *const _ as *const f32, // Change c_void to f32
-                &x_click as *const _ as *const f32, // mouse_x
-                &y_click as *const _ as *const f32, // mouse_y
-                &d_image as *const _ as *const f32, // Change c_void to f32
-            ];
-
-            // Reset the graph for each frame
-            graph.clear_operations();
-
-            // Add operations to the graph
-            // graph.add_operation(OperationType::Kernel("computeDepthMap".to_string()), params_sdf.clone(), None);
-            graph.add_operation(OperationType::Kernel("generate_image".to_string()), params2.clone(), None);
-
-            // Execute the computation graph
-            graph.execute(grid_dim, block_dim)?;
-
-            // Copy the result from GPU to CPU memory
-            cuda_context.retrieve_tensor(d_image, &mut image, (width * height * 3) as usize)?;
-
-            // Update texture with the new image
-            texture.update(None, &image, (width * 3) as usize)?;
-            canvas.copy(&texture, None, None)?;
-
-            frame_count += 1;
-            if last_frame.elapsed() >= Duration::from_secs(1) {
-                fps = frame_count;
-                frame_count = 0;
-                last_frame = Instant::now();
-            }
-
-            // Render FPS text
-            let fps_text = format!("FPS: {}", fps);
-            let surface = font.render(&fps_text)
-                .blended(sdl2::pixels::Color::RGBA(255, 0, 255, 255))
-                .map_err(|e| {
-                    eprintln!("Failed to render text surface: {}", e);
-                    e.to_string()
-                })?;
-            let texture = texture_creator.create_texture_from_surface(&surface)
-                .map_err(|e| {
-                    eprintln!("Failed to create texture from surface: {}", e);
-                    e.to_string()
-                })?;
-
-            let TextureQuery { width, height, .. } = texture.query();
-            let target = Rect::new(128 - width as i32 - 10, 10, width, height);
-
-            canvas.set_blend_mode(BlendMode::Blend);
-            canvas.copy(&texture, None, Some(target))?;
-            canvas.present();
-
-            //thread::sleep(Duration::from_millis(16)); // ~60 FPS
         }
+
+        // Parameters for the CUDA kernels
+        // let params_sdf = vec![
+        //     &width as *const _ as *const c_void,
+        //     &height as *const _ as *const c_void,
+        //     &sphere_x as *const _ as *const c_void,
+        //     &sphere_y as *const _ as *const c_void,
+        //     &sphere_z as *const _ as *const c_void,
+        //     &radius as *const _ as *const c_void,
+        //     &theta_1 as *const _ as *const c_void,
+        //     &phi_1 as *const _ as *const c_void,
+        //     &d_image as *const _ as *const c_void,
+        // ];
+
+        let params1 = vec![
+            &width as *const _ as *const f32, // Change c_void to f32
+            &height as *const _ as *const f32, // Change c_void to f32
+            &d_image as *const _ as *const f32, // Change c_void to f32
+        ];
+
+        let params2 = vec![
+            &width as *const _ as *const f32, // Change c_void to f32
+            &height as *const _ as *const f32, // Change c_void to f32
+            &x_click as *const _ as *const f32, // mouse_x
+            &y_click as *const _ as *const f32, // mouse_y
+            &d_image as *const _ as *const f32, // Change c_void to f32
+        ];
+
+        // Reset the graph for each frame
+        graph.clear_operations();
+
+        // Add operations to the graph
+        // graph.add_operation(OperationType::Kernel("computeDepthMap".to_string()), params_sdf.clone(), None);
+        graph.add_operation(OperationType::Kernel("generate_image".to_string()), params1.clone(), None);
+        graph.add_operation(OperationType::Kernel("draw_circle".to_string()), params2.clone(), None);
+
+        // Execute the computation graph
+        graph.execute(grid_dim, block_dim)?;
+
+        // Copy the result from GPU to CPU memory
+        cuda_context.retrieve_tensor(d_image, &mut image, (width * height * 3) as usize)?;
+
+        // Update texture with the new image
+        texture.update(None, &image, (width * 3) as usize)?;
+        canvas.copy(&texture, None, None)?;
+
+        frame_count += 1;
+        if last_frame.elapsed() >= Duration::from_secs(1) {
+            fps = frame_count;
+            frame_count = 0;
+            last_frame = Instant::now();
+        }
+
+        // Render FPS text
+        let fps_text = format!("FPS: {}", fps);
+        let surface = font.render(&fps_text)
+            .blended(sdl2::pixels::Color::RGBA(255, 0, 255, 255))
+            .map_err(|e| {
+                eprintln!("Failed to render text surface: {}", e);
+                e.to_string()
+            })?;
+        let texture = texture_creator.create_texture_from_surface(&surface)
+            .map_err(|e| {
+                eprintln!("Failed to create texture from surface: {}", e);
+                e.to_string()
+            })?;
+
+        let TextureQuery { width, height, .. } = texture.query();
+        let target = Rect::new(128 - width as i32 - 10, 10, width, height);
+
+        canvas.set_blend_mode(BlendMode::Blend);
+        canvas.copy(&texture, None, Some(target))?;
+        canvas.present();
+
+        //thread::sleep(Duration::from_millis(16)); // ~60 FPS
     }
 
     CudaContext::free_tensor(d_image)?;
