@@ -34,13 +34,16 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Initialize CUDA context and load kernels
     let mut cuda_context = CudaContext::new("./src/gpu_utils/kernel.ptx")?;
-    cuda_context.load_kernel("computeDepthMap")?;
-    cuda_context.load_kernel("generate_image")?;
+    cuda_context.load_kernel("kernel1")?;
+    cuda_context.load_kernel("kernel2")?;
+    cuda_context.load_kernel("kernel3")?;
+    cuda_context.load_kernel("kernel4")?;
 
     // Create CUDA streams
     cuda_context.create_stream("stream1")?;
     cuda_context.create_stream("stream2")?;
-
+    cuda_context.create_stream("stream3")?;
+    cuda_context.create_stream("stream4")?;
 
     let sphere_x = 0.0f32;
     let sphere_y = 10.0f32;
@@ -103,9 +106,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                 },
                 _ => {}
             }
-        }
 
-        let params_sdf = vec![
+
+            let params_sdf = vec![
             &width as *const _ as *const c_void,
             &height as *const _ as *const c_void,
             &sphere_x as *const _ as *const c_void,
@@ -115,67 +118,68 @@ fn main() -> Result<(), Box<dyn Error>> {
             &theta_1 as *const _ as *const c_void,
             &phi_1 as *const _ as *const c_void,
             &d_image as *const _ as *const c_void,
-        ];
+            ];
 
-        let grid_dim = dim3 {
-            x: ((width + 15) / 16) as u32,
-            y: ((height + 15) / 16) as u32,
-            z: 1,
-        };
-        let block_dim = dim3 { x: 16, y: 16, z: 1 };
+            let grid_dim = dim3 {
+                x: ((width + 15) / 16) as u32,
+                y: ((height + 15) / 16) as u32,
+                z: 1,
+            };
+            let block_dim = dim3 { x: 16, y: 16, z: 1 };
 
-        let params2 = vec![
-            &width as *const _ as *const c_void,
-            &height as *const _ as *const c_void,
-            &400 as *const _ as *const c_void, // mouse_x
-            &300 as *const _ as *const c_void, // mouse_y
-            &d_image as *const _ as *const c_void,
-        ];
+            let params2 = vec![
+                &width as *const _ as *const c_void,
+                &height as *const _ as *const c_void,
+                &400 as *const _ as *const c_void, // mouse_x
+                &300 as *const _ as *const c_void, // mouse_y
+                &d_image as *const _ as *const c_void,
+            ];
 
-        cuda_context.launch_kernel("computeDepthMap", grid_dim, block_dim, params1, "stream1")?;
-        cuda_context.launch_kernel("generate_image", grid_dim, block_dim, params2, "stream2")?;
+            cuda_context.launch_kernel("computeDepthMap", grid_dim, block_dim, params1, "stream1")?;
+            cuda_context.launch_kernel("generate_image", grid_dim, block_dim, params2, "stream2")?;
 
-        cuda_context.synchronize("stream1")?;
-        cuda_context.synchronize("stream2")?;
+            cuda_context.synchronize("stream1")?;
+            cuda_context.synchronize("stream2")?;
 
-        unsafe {
-            check_cuda_result(cuMemcpyDtoH_v2(image.as_mut_ptr() as *mut _, d_image, (width * height * 3) as usize), "cuMemcpyDtoH_v2")?;
+            unsafe {
+                check_cuda_result(cuMemcpyDtoH_v2(image.as_mut_ptr() as *mut _, d_image, (width * height * 3) as usize), "cuMemcpyDtoH_v2")?;
+            }
+
+            texture.update(None, &image, (width * 3) as usize)?;
+            canvas.copy(&texture, None, None)?;
+
+            // Calculate FPS
+            frame_count += 1;
+            if last_frame.elapsed() >= Duration::from_secs(1) {
+                fps = frame_count;
+                frame_count = 0;
+                last_frame = Instant::now();
+            }
+
+            // Render FPS text
+            let fps_text = format!("FPS: {}", fps);
+            let surface = font.render(&fps_text)
+                            .blended(sdl2::pixels::Color::RGBA(255, 0, 255, 255))
+                            .map_err(|e| {
+                                eprintln!("Failed to render text surface: {}", e);
+                                e.to_string()
+                            })?;
+            let texture = texture_creator.create_texture_from_surface(&surface)
+                                        .map_err(|e| {
+                                            eprintln!("Failed to create texture from surface: {}", e);
+                                            e.to_string()
+                                        })?;
+            
+            let TextureQuery { width, height, .. } = texture.query();
+            let target = Rect::new(128 - width as i32 - 10, 10, width, height);
+            
+            canvas.set_blend_mode(BlendMode::Blend);
+            canvas.copy(&texture, None, Some(target))?;
+            
+            canvas.present();
+
+            //thread::sleep(Duration::from_millis(16)); // ~60 FPS
         }
-
-        texture.update(None, &image, (width * 3) as usize)?;
-        canvas.copy(&texture, None, None)?;
-
-        // Calculate FPS
-        frame_count += 1;
-        if last_frame.elapsed() >= Duration::from_secs(1) {
-            fps = frame_count;
-            frame_count = 0;
-            last_frame = Instant::now();
-        }
-
-        // Render FPS text
-        let fps_text = format!("FPS: {}", fps);
-        let surface = font.render(&fps_text)
-                          .blended(sdl2::pixels::Color::RGBA(255, 0, 255, 255))
-                          .map_err(|e| {
-                              eprintln!("Failed to render text surface: {}", e);
-                              e.to_string()
-                          })?;
-        let texture = texture_creator.create_texture_from_surface(&surface)
-                                     .map_err(|e| {
-                                         eprintln!("Failed to create texture from surface: {}", e);
-                                         e.to_string()
-                                     })?;
-        
-        let TextureQuery { width, height, .. } = texture.query();
-        let target = Rect::new(128 - width as i32 - 10, 10, width, height);
-        
-        canvas.set_blend_mode(BlendMode::Blend);
-        canvas.copy(&texture, None, Some(target))?;
-        
-        canvas.present();
-
-        //thread::sleep(Duration::from_millis(16)); // ~60 FPS
     }
 
     // Free device memory
