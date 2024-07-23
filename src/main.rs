@@ -10,7 +10,7 @@ use std::ffi::c_void;
 use std::time::{Instant, Duration};
 
 use cuda_wrapper::{CudaContext, dim3};
-use dynamic_computation_graph::{ComputationGraph, Operation, OperationType};
+use dynamic_computation_graph::{ComputationGraph, OperationType}; // Remove Operation if not used
 
 fn main() -> Result<(), Box<dyn Error>> {
     // Initialize the SDL2 context
@@ -43,7 +43,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Allocate GPU memory
     let mut image: Vec<u8> = vec![0u8; (width * height * 3) as usize];
-    let d_image = cuda_context.allocate_tensor(&image, (width * height * 3) as usize)?;
+    let d_image = CudaContext::allocate_tensor(&image, (width * height * 3) as usize)?; // Use associated function syntax
 
     let font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
     let font = ttf_context.load_font(font_path, 16)
@@ -148,7 +148,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             texture.update(None, &image, (width * 3) as usize)?;
             canvas.copy(&texture, None, None)?;
 
-
             frame_count += 1;
             if last_frame.elapsed() >= Duration::from_secs(1) {
                 fps = frame_count;
@@ -175,15 +174,13 @@ fn main() -> Result<(), Box<dyn Error>> {
 
             canvas.set_blend_mode(BlendMode::Blend);
             canvas.copy(&texture, None, Some(target))?;
-
             canvas.present();
 
             //thread::sleep(Duration::from_millis(16)); // ~60 FPS
         }
     }
 
-    // Free device memory
-    cuda_context.free_tensor(d_image)?;
+    CudaContext::free_tensor(d_image)?;
 
     Ok(())
 }

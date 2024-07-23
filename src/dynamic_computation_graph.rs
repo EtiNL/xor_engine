@@ -9,7 +9,7 @@ pub enum OperationType {
 
 pub struct Operation {
     op_type: OperationType,
-    inputs: Vec<*mut f32>,
+    inputs: Vec<*const f32>, // Change *mut to *const
     output: Option<*mut f32>,
 }
 
@@ -26,7 +26,7 @@ impl ComputationGraph {
         }
     }
 
-    pub fn add_operation(&mut self, op_type: OperationType, inputs: Vec<*mut f32>, output: Option<*mut f32>) {
+    pub fn add_operation(&mut self, op_type: OperationType, inputs: Vec<*const f32>, output: Option<*mut f32>) { // Change *mut to *const
         self.operations.push(Operation { op_type, inputs, output });
     }
 
@@ -45,13 +45,13 @@ impl ComputationGraph {
         for op in &self.operations {
             match &op.op_type {
                 OperationType::Kernel(kernel_name) => {
-                    let args: Vec<*mut c_void> = op.inputs.iter().map(|&input| input as *mut c_void).collect();
+                    let args: Vec<*const c_void> = op.inputs.iter().map(|&input| input as *const c_void).collect(); // Cast to *const c_void
                     self.cuda_context.launch_kernel(kernel_name, grid_dim, block_dim, args, "stream1")?;
                 }
                 OperationType::Conditional(cond, true_branch) => {
                     if cond() {
                         for sub_op in true_branch {
-                            let args: Vec<*mut c_void> = sub_op.inputs.iter().map(|&input| input as *mut c_void).collect();
+                            let args: Vec<*const c_void> = sub_op.inputs.iter().map(|&input| input as *const c_void).collect(); // Cast to *const c_void
                             if let OperationType::Kernel(kernel_name) = &sub_op.op_type {
                                 self.cuda_context.launch_kernel(kernel_name, grid_dim, block_dim, args, "stream1")?;
                             }
