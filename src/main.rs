@@ -69,14 +69,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut theta_1 = 0f32;
     let mut phi_1 = 0f32;
     let mut mouse_down = false;
-
+    
+    // 256 threads / blocks (max is 1024) wichs allows for up to 4 streams computing in parallel
     let grid_dim = dim3 {
         x: ((width + 15) / 16) as u32,
         y: ((height + 15) / 16) as u32,
         z: 1,
     };
     let block_dim = dim3 { x: 16, y: 16, z: 1 };
-
+ 
     // Calculate FPS
     let mut last_frame = Instant::now();
     let mut frame_count = 0;
@@ -128,6 +129,22 @@ fn main() -> Result<(), Box<dyn Error>> {
         //     &phi_1 as *const _ as *const c_void,
         //     &d_image as *const _ as *const c_void,
         // ];
+
+        // float screen_x = sinf(theta) * cosf(phi);
+        // float screen_y = sinf(theta) * sinf(phi);
+        // float screen_z = cosf(theta);
+
+        // float u_rho_x = sinf(theta) * cosf(phi);
+        // float u_rho_y = sinf(theta) * sinf(phi);
+        // float u_rho_z = cosf(theta);
+
+        // float u_theta_x = cosf(theta) * cosf(phi);
+        // float u_theta_y = cosf(theta) * sinf(phi);
+        // float u_theta_z = - sinf(theta);
+
+        // float u_phi_x = sinf(theta) * cosf(phi);
+        // float u_phi_y = sinf(theta) * sinf(phi);
+        // float u_phi_z = cosf(theta);
 
         let params1 = vec![
             &width as *const _ as *const f32, // Change c_void to f32

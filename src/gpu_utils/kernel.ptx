@@ -114,55 +114,46 @@ $L__BB1_3:
 	// .globl	produit_scalaire
 .visible .entry produit_scalaire(
 	.param .u32 produit_scalaire_param_0,
-	.param .u32 produit_scalaire_param_1,
+	.param .u64 produit_scalaire_param_1,
 	.param .u64 produit_scalaire_param_2,
-	.param .u64 produit_scalaire_param_3,
-	.param .u64 produit_scalaire_param_4
+	.param .u64 produit_scalaire_param_3
 )
 {
-	.reg .pred 	%p<4>;
-	.reg .b32 	%r<22>;
+	.reg .pred 	%p<2>;
+	.reg .b32 	%r<16>;
 	.reg .b64 	%rd<12>;
 
 
-	ld.param.u32 	%r3, [produit_scalaire_param_0];
-	ld.param.u32 	%r4, [produit_scalaire_param_1];
-	ld.param.u64 	%rd1, [produit_scalaire_param_2];
-	ld.param.u64 	%rd2, [produit_scalaire_param_3];
-	ld.param.u64 	%rd3, [produit_scalaire_param_4];
-	mov.u32 	%r5, %ntid.x;
-	mov.u32 	%r6, %ctaid.x;
-	mov.u32 	%r7, %tid.x;
-	mad.lo.s32 	%r1, %r6, %r5, %r7;
-	mov.u32 	%r8, %ntid.y;
-	mov.u32 	%r9, %ctaid.y;
-	mov.u32 	%r10, %tid.y;
-	mad.lo.s32 	%r2, %r9, %r8, %r10;
-	setp.ge.s32 	%p1, %r1, %r3;
-	setp.ge.s32 	%p2, %r2, %r4;
-	or.pred  	%p3, %p1, %p2;
-	@%p3 bra 	$L__BB2_2;
+	ld.param.u32 	%r2, [produit_scalaire_param_0];
+	ld.param.u64 	%rd1, [produit_scalaire_param_1];
+	ld.param.u64 	%rd2, [produit_scalaire_param_2];
+	ld.param.u64 	%rd3, [produit_scalaire_param_3];
+	mov.u32 	%r3, %ntid.x;
+	mov.u32 	%r4, %ctaid.x;
+	mov.u32 	%r5, %tid.x;
+	mad.lo.s32 	%r1, %r4, %r3, %r5;
+	setp.ge.s32 	%p1, %r1, %r2;
+	@%p1 bra 	$L__BB2_2;
 
 	cvta.to.global.u64 	%rd4, %rd3;
-	mad.lo.s32 	%r11, %r2, %r3, %r1;
-	mul.lo.s32 	%r12, %r11, 3;
-	cvt.s64.s32 	%rd5, %r12;
+	mul.lo.s32 	%r6, %r1, 3;
+	cvt.s64.s32 	%rd5, %r6;
 	cvta.to.global.u64 	%rd6, %rd1;
 	add.s64 	%rd7, %rd6, %rd5;
-	ld.global.u8 	%r13, [%rd7];
+	ld.global.u8 	%r7, [%rd7];
 	cvta.to.global.u64 	%rd8, %rd2;
 	add.s64 	%rd9, %rd8, %rd5;
-	ld.global.u8 	%r14, [%rd9];
-	mul.lo.s32 	%r15, %r14, %r13;
-	ld.global.u8 	%r16, [%rd7+1];
-	ld.global.u8 	%r17, [%rd9+1];
-	mad.lo.s32 	%r18, %r17, %r16, %r15;
-	ld.global.u8 	%r19, [%rd7+2];
-	ld.global.u8 	%r20, [%rd9+2];
-	mad.lo.s32 	%r21, %r20, %r19, %r18;
-	cvt.s64.s32 	%rd10, %r11;
+	ld.global.u8 	%r8, [%rd9];
+	mul.lo.s32 	%r9, %r8, %r7;
+	ld.global.u8 	%r10, [%rd7+1];
+	ld.global.u8 	%r11, [%rd9+1];
+	mad.lo.s32 	%r12, %r11, %r10, %r9;
+	ld.global.u8 	%r13, [%rd7+2];
+	ld.global.u8 	%r14, [%rd9+2];
+	mad.lo.s32 	%r15, %r14, %r13, %r12;
+	cvt.s64.s32 	%rd10, %r1;
 	add.s64 	%rd11, %rd4, %rd10;
-	st.global.u8 	[%rd11], %r21;
+	st.global.u8 	[%rd11], %r15;
 
 $L__BB2_2:
 	ret;
@@ -171,81 +162,72 @@ $L__BB2_2:
 	// .globl	sdf_sphere
 .visible .entry sdf_sphere(
 	.param .u32 sdf_sphere_param_0,
-	.param .u32 sdf_sphere_param_1,
+	.param .f32 sdf_sphere_param_1,
 	.param .f32 sdf_sphere_param_2,
 	.param .f32 sdf_sphere_param_3,
 	.param .f32 sdf_sphere_param_4,
-	.param .f32 sdf_sphere_param_5,
+	.param .u64 sdf_sphere_param_5,
 	.param .u64 sdf_sphere_param_6,
 	.param .u64 sdf_sphere_param_7,
-	.param .u64 sdf_sphere_param_8,
-	.param .u64 sdf_sphere_param_9
+	.param .u64 sdf_sphere_param_8
 )
 {
-	.reg .pred 	%p<4>;
+	.reg .pred 	%p<2>;
 	.reg .f32 	%f<16>;
-	.reg .b32 	%r<24>;
+	.reg .b32 	%r<18>;
 	.reg .b64 	%rd<15>;
 
 
-	ld.param.u32 	%r3, [sdf_sphere_param_0];
-	ld.param.u32 	%r4, [sdf_sphere_param_1];
-	ld.param.f32 	%f1, [sdf_sphere_param_2];
-	ld.param.f32 	%f2, [sdf_sphere_param_3];
-	ld.param.f32 	%f3, [sdf_sphere_param_4];
-	ld.param.f32 	%f4, [sdf_sphere_param_5];
-	ld.param.u64 	%rd1, [sdf_sphere_param_6];
-	ld.param.u64 	%rd2, [sdf_sphere_param_7];
-	ld.param.u64 	%rd3, [sdf_sphere_param_8];
-	ld.param.u64 	%rd4, [sdf_sphere_param_9];
-	mov.u32 	%r5, %ntid.x;
-	mov.u32 	%r6, %ctaid.x;
-	mov.u32 	%r7, %tid.x;
-	mad.lo.s32 	%r1, %r6, %r5, %r7;
-	mov.u32 	%r8, %ntid.y;
-	mov.u32 	%r9, %ctaid.y;
-	mov.u32 	%r10, %tid.y;
-	mad.lo.s32 	%r2, %r9, %r8, %r10;
-	setp.ge.s32 	%p1, %r1, %r3;
-	setp.ge.s32 	%p2, %r2, %r4;
-	or.pred  	%p3, %p1, %p2;
-	@%p3 bra 	$L__BB3_2;
+	ld.param.u32 	%r2, [sdf_sphere_param_0];
+	ld.param.f32 	%f1, [sdf_sphere_param_1];
+	ld.param.f32 	%f2, [sdf_sphere_param_2];
+	ld.param.f32 	%f3, [sdf_sphere_param_3];
+	ld.param.f32 	%f4, [sdf_sphere_param_4];
+	ld.param.u64 	%rd1, [sdf_sphere_param_5];
+	ld.param.u64 	%rd2, [sdf_sphere_param_6];
+	ld.param.u64 	%rd3, [sdf_sphere_param_7];
+	ld.param.u64 	%rd4, [sdf_sphere_param_8];
+	mov.u32 	%r3, %ntid.x;
+	mov.u32 	%r4, %ctaid.x;
+	mov.u32 	%r5, %tid.x;
+	mad.lo.s32 	%r1, %r4, %r3, %r5;
+	setp.ge.s32 	%p1, %r1, %r2;
+	@%p1 bra 	$L__BB3_2;
 
 	cvta.to.global.u64 	%rd5, %rd3;
-	mad.lo.s32 	%r11, %r2, %r3, %r1;
-	mul.lo.s32 	%r12, %r11, 3;
-	cvt.s64.s32 	%rd6, %r12;
+	mul.lo.s32 	%r6, %r1, 3;
+	cvt.s64.s32 	%rd6, %r6;
 	cvta.to.global.u64 	%rd7, %rd1;
 	add.s64 	%rd8, %rd7, %rd6;
-	ld.global.u8 	%r13, [%rd8];
-	cvt.s64.s32 	%rd9, %r11;
+	ld.global.u8 	%r7, [%rd8];
+	cvt.s64.s32 	%rd9, %r1;
 	add.s64 	%rd10, %rd5, %rd9;
-	ld.global.u8 	%r14, [%rd10];
+	ld.global.u8 	%r8, [%rd10];
 	cvta.to.global.u64 	%rd11, %rd2;
 	add.s64 	%rd12, %rd11, %rd6;
-	ld.global.u8 	%r15, [%rd12];
-	mad.lo.s32 	%r16, %r15, %r14, %r13;
-	cvt.rn.f32.s32 	%f5, %r16;
+	ld.global.u8 	%r9, [%rd12];
+	mad.lo.s32 	%r10, %r9, %r8, %r7;
+	cvt.rn.f32.s32 	%f5, %r10;
 	sub.f32 	%f6, %f5, %f1;
-	ld.global.u8 	%r17, [%rd8+1];
-	ld.global.u8 	%r18, [%rd12+1];
-	mad.lo.s32 	%r19, %r18, %r14, %r17;
-	cvt.rn.f32.s32 	%f7, %r19;
+	ld.global.u8 	%r11, [%rd8+1];
+	ld.global.u8 	%r12, [%rd12+1];
+	mad.lo.s32 	%r13, %r12, %r8, %r11;
+	cvt.rn.f32.s32 	%f7, %r13;
 	sub.f32 	%f8, %f7, %f2;
-	ld.global.u8 	%r20, [%rd8+2];
-	ld.global.u8 	%r21, [%rd12+2];
-	mad.lo.s32 	%r22, %r21, %r14, %r20;
-	cvt.rn.f32.s32 	%f9, %r22;
+	ld.global.u8 	%r14, [%rd8+2];
+	ld.global.u8 	%r15, [%rd12+2];
+	mad.lo.s32 	%r16, %r15, %r8, %r14;
+	cvt.rn.f32.s32 	%f9, %r16;
 	sub.f32 	%f10, %f9, %f3;
 	mul.f32 	%f11, %f8, %f8;
 	fma.rn.f32 	%f12, %f6, %f6, %f11;
 	fma.rn.f32 	%f13, %f10, %f10, %f12;
 	sqrt.rn.f32 	%f14, %f13;
 	sub.f32 	%f15, %f14, %f4;
-	cvt.rzi.u32.f32 	%r23, %f15;
+	cvt.rzi.u32.f32 	%r17, %f15;
 	cvta.to.global.u64 	%rd13, %rd4;
 	add.s64 	%rd14, %rd13, %rd9;
-	st.global.u8 	[%rd14], %r23;
+	st.global.u8 	[%rd14], %r17;
 
 $L__BB3_2:
 	ret;
@@ -254,87 +236,76 @@ $L__BB3_2:
 	// .globl	grad_sdf_sphere
 .visible .entry grad_sdf_sphere(
 	.param .u32 grad_sdf_sphere_param_0,
-	.param .u32 grad_sdf_sphere_param_1,
+	.param .f32 grad_sdf_sphere_param_1,
 	.param .f32 grad_sdf_sphere_param_2,
 	.param .f32 grad_sdf_sphere_param_3,
 	.param .f32 grad_sdf_sphere_param_4,
-	.param .f32 grad_sdf_sphere_param_5,
+	.param .u64 grad_sdf_sphere_param_5,
 	.param .u64 grad_sdf_sphere_param_6,
 	.param .u64 grad_sdf_sphere_param_7,
-	.param .u64 grad_sdf_sphere_param_8,
-	.param .u64 grad_sdf_sphere_param_9
+	.param .u64 grad_sdf_sphere_param_8
 )
 {
-	.reg .pred 	%p<4>;
+	.reg .pred 	%p<2>;
 	.reg .f32 	%f<14>;
-	.reg .b32 	%r<29>;
-	.reg .b64 	%rd<16>;
+	.reg .b32 	%r<22>;
+	.reg .b64 	%rd<15>;
 
 
-	ld.param.u32 	%r3, [grad_sdf_sphere_param_0];
-	ld.param.u32 	%r4, [grad_sdf_sphere_param_1];
-	ld.param.f32 	%f1, [grad_sdf_sphere_param_2];
-	ld.param.f32 	%f2, [grad_sdf_sphere_param_3];
-	ld.param.f32 	%f3, [grad_sdf_sphere_param_4];
-	ld.param.f32 	%f4, [grad_sdf_sphere_param_5];
-	ld.param.u64 	%rd1, [grad_sdf_sphere_param_6];
-	ld.param.u64 	%rd2, [grad_sdf_sphere_param_7];
-	ld.param.u64 	%rd3, [grad_sdf_sphere_param_8];
-	ld.param.u64 	%rd4, [grad_sdf_sphere_param_9];
-	mov.u32 	%r5, %ntid.x;
-	mov.u32 	%r6, %ctaid.x;
-	mov.u32 	%r7, %tid.x;
-	mad.lo.s32 	%r1, %r6, %r5, %r7;
-	mov.u32 	%r8, %ntid.y;
-	mov.u32 	%r9, %ctaid.y;
-	mov.u32 	%r10, %tid.y;
-	mad.lo.s32 	%r2, %r9, %r8, %r10;
-	setp.ge.s32 	%p1, %r1, %r3;
-	setp.ge.s32 	%p2, %r2, %r4;
-	or.pred  	%p3, %p1, %p2;
-	@%p3 bra 	$L__BB4_2;
+	ld.param.u32 	%r2, [grad_sdf_sphere_param_0];
+	ld.param.f32 	%f1, [grad_sdf_sphere_param_1];
+	ld.param.f32 	%f2, [grad_sdf_sphere_param_2];
+	ld.param.f32 	%f3, [grad_sdf_sphere_param_3];
+	ld.param.f32 	%f4, [grad_sdf_sphere_param_4];
+	ld.param.u64 	%rd1, [grad_sdf_sphere_param_5];
+	ld.param.u64 	%rd2, [grad_sdf_sphere_param_6];
+	ld.param.u64 	%rd3, [grad_sdf_sphere_param_7];
+	ld.param.u64 	%rd4, [grad_sdf_sphere_param_8];
+	mov.u32 	%r3, %ntid.x;
+	mov.u32 	%r4, %ctaid.x;
+	mov.u32 	%r5, %tid.x;
+	mad.lo.s32 	%r1, %r4, %r3, %r5;
+	setp.ge.s32 	%p1, %r1, %r2;
+	@%p1 bra 	$L__BB4_2;
 
-	cvta.to.global.u64 	%rd5, %rd2;
-	cvta.to.global.u64 	%rd6, %rd3;
-	mad.lo.s32 	%r11, %r2, %r3, %r1;
-	mul.lo.s32 	%r12, %r11, 3;
-	cvt.s64.s32 	%rd7, %r12;
-	cvta.to.global.u64 	%rd8, %rd1;
-	add.s64 	%rd9, %rd8, %rd7;
-	ld.global.u8 	%r13, [%rd9];
-	add.s64 	%rd10, %rd6, %rd7;
-	ld.global.u8 	%r14, [%rd10];
-	mul.lo.s32 	%r15, %r11, 9;
-	cvt.s64.s32 	%rd11, %r15;
-	add.s64 	%rd12, %rd5, %rd11;
-	ld.global.u8 	%r16, [%rd12];
-	mad.lo.s32 	%r17, %r16, %r14, %r13;
-	cvt.rn.f32.s32 	%f5, %r17;
+	cvta.to.global.u64 	%rd5, %rd3;
+	mul.lo.s32 	%r6, %r1, 3;
+	cvt.s64.s32 	%rd6, %r6;
+	cvta.to.global.u64 	%rd7, %rd1;
+	add.s64 	%rd8, %rd7, %rd6;
+	ld.global.u8 	%r7, [%rd8];
+	cvt.s64.s32 	%rd9, %r1;
+	add.s64 	%rd10, %rd5, %rd9;
+	ld.global.u8 	%r8, [%rd10];
+	cvta.to.global.u64 	%rd11, %rd2;
+	add.s64 	%rd12, %rd11, %rd6;
+	ld.global.u8 	%r9, [%rd12];
+	mad.lo.s32 	%r10, %r9, %r8, %r7;
+	cvt.rn.f32.s32 	%f5, %r10;
 	sub.f32 	%f6, %f5, %f1;
 	div.rn.f32 	%f7, %f6, %f4;
-	cvt.rzi.u32.f32 	%r18, %f7;
+	cvt.rzi.u32.f32 	%r11, %f7;
 	cvta.to.global.u64 	%rd13, %rd4;
-	add.s64 	%rd14, %rd13, %rd7;
-	st.global.u8 	[%rd14], %r18;
-	ld.global.u8 	%r19, [%rd9+1];
-	ld.global.u8 	%r20, [%rd10];
-	add.s64 	%rd15, %rd5, %rd7;
-	ld.global.u8 	%r21, [%rd15+1];
-	mad.lo.s32 	%r22, %r21, %r20, %r19;
-	cvt.rn.f32.s32 	%f8, %r22;
+	add.s64 	%rd14, %rd13, %rd6;
+	st.global.u8 	[%rd14], %r11;
+	ld.global.u8 	%r12, [%rd8+1];
+	ld.global.u8 	%r13, [%rd10];
+	ld.global.u8 	%r14, [%rd12+1];
+	mad.lo.s32 	%r15, %r14, %r13, %r12;
+	cvt.rn.f32.s32 	%f8, %r15;
 	sub.f32 	%f9, %f8, %f2;
 	div.rn.f32 	%f10, %f9, %f4;
-	cvt.rzi.u32.f32 	%r23, %f10;
-	st.global.u8 	[%rd14+1], %r23;
-	ld.global.u8 	%r24, [%rd9+2];
-	ld.global.u8 	%r25, [%rd10];
-	ld.global.u8 	%r26, [%rd15+2];
-	mad.lo.s32 	%r27, %r26, %r25, %r24;
-	cvt.rn.f32.s32 	%f11, %r27;
+	cvt.rzi.u32.f32 	%r16, %f10;
+	st.global.u8 	[%rd14+1], %r16;
+	ld.global.u8 	%r17, [%rd8+2];
+	ld.global.u8 	%r18, [%rd10];
+	ld.global.u8 	%r19, [%rd12+2];
+	mad.lo.s32 	%r20, %r19, %r18, %r17;
+	cvt.rn.f32.s32 	%f11, %r20;
 	sub.f32 	%f12, %f11, %f3;
 	div.rn.f32 	%f13, %f12, %f4;
-	cvt.rzi.u32.f32 	%r28, %f13;
-	st.global.u8 	[%rd14+2], %r28;
+	cvt.rzi.u32.f32 	%r21, %f13;
+	st.global.u8 	[%rd14+2], %r21;
 
 $L__BB4_2:
 	ret;
@@ -343,78 +314,91 @@ $L__BB4_2:
 	// .globl	newton_march
 .visible .entry newton_march(
 	.param .u32 newton_march_param_0,
-	.param .u32 newton_march_param_1,
-	.param .f32 newton_march_param_2,
-	.param .f32 newton_march_param_3,
-	.param .f32 newton_march_param_4,
+	.param .f32 newton_march_param_1,
+	.param .u64 newton_march_param_2,
+	.param .u64 newton_march_param_3,
+	.param .u64 newton_march_param_4,
 	.param .u64 newton_march_param_5,
 	.param .u64 newton_march_param_6,
-	.param .u64 newton_march_param_7,
-	.param .u64 newton_march_param_8
+	.param .u64 newton_march_param_7
 )
 {
-	.reg .pred 	%p<5>;
-	.reg .b16 	%rs<3>;
-	.reg .f32 	%f<6>;
-	.reg .b32 	%r<13>;
-	.reg .b64 	%rd<11>;
+	.reg .pred 	%p<3>;
+	.reg .b16 	%rs<4>;
+	.reg .f32 	%f<8>;
+	.reg .b32 	%r<12>;
+	.reg .b64 	%rd<17>;
 
 
-	ld.param.u32 	%r3, [newton_march_param_0];
-	ld.param.u32 	%r4, [newton_march_param_1];
-	ld.param.f32 	%f2, [newton_march_param_3];
-	ld.param.u64 	%rd2, [newton_march_param_5];
-	ld.param.u64 	%rd3, [newton_march_param_6];
-	ld.param.u64 	%rd4, [newton_march_param_8];
-	mov.u32 	%r5, %ntid.x;
-	mov.u32 	%r6, %ctaid.x;
-	mov.u32 	%r7, %tid.x;
-	mad.lo.s32 	%r1, %r6, %r5, %r7;
-	mov.u32 	%r8, %ntid.y;
-	mov.u32 	%r9, %ctaid.y;
-	mov.u32 	%r10, %tid.y;
-	mad.lo.s32 	%r2, %r9, %r8, %r10;
-	setp.ge.s32 	%p1, %r1, %r3;
-	setp.ge.s32 	%p2, %r2, %r4;
-	or.pred  	%p3, %p1, %p2;
-	@%p3 bra 	$L__BB5_3;
+	ld.param.u32 	%r2, [newton_march_param_0];
+	ld.param.f32 	%f3, [newton_march_param_1];
+	ld.param.u64 	%rd3, [newton_march_param_2];
+	ld.param.u64 	%rd4, [newton_march_param_3];
+	ld.param.u64 	%rd5, [newton_march_param_5];
+	ld.param.u64 	%rd6, [newton_march_param_6];
+	ld.param.u64 	%rd7, [newton_march_param_7];
+	mov.u32 	%r3, %ntid.x;
+	mov.u32 	%r4, %ctaid.x;
+	mov.u32 	%r5, %tid.x;
+	mad.lo.s32 	%r1, %r4, %r3, %r5;
+	setp.ge.s32 	%p1, %r1, %r2;
+	@%p1 bra 	$L__BB5_4;
 
-	cvta.to.global.u64 	%rd5, %rd2;
-	mad.lo.s32 	%r11, %r2, %r3, %r1;
-	cvt.s64.s32 	%rd1, %r11;
-	add.s64 	%rd6, %rd5, %rd1;
-	ld.global.u8 	%rs1, [%rd6];
-	cvt.rn.f32.u16 	%f3, %rs1;
-	cvta.to.global.u64 	%rd7, %rd3;
-	add.s64 	%rd8, %rd7, %rd1;
-	ld.global.u8 	%rs2, [%rd8];
-	cvt.rn.f32.u16 	%f4, %rs2;
-	neg.f32 	%f5, %f4;
-	div.rn.f32 	%f1, %f5, %f3;
-	setp.geu.f32 	%p4, %f1, %f2;
-	@%p4 bra 	$L__BB5_3;
-
-	cvt.rzi.u32.f32 	%r12, %f1;
-	cvta.to.global.u64 	%rd9, %rd4;
+	cvta.to.global.u64 	%rd8, %rd5;
+	cvt.s64.s32 	%rd1, %r1;
+	cvta.to.global.u64 	%rd9, %rd3;
 	add.s64 	%rd10, %rd9, %rd1;
-	st.global.u8 	[%rd10], %r12;
+	ld.global.u8 	%rs1, [%rd10];
+	cvt.rn.f32.u16 	%f4, %rs1;
+	cvta.to.global.u64 	%rd11, %rd4;
+	add.s64 	%rd12, %rd11, %rd1;
+	ld.global.u8 	%rs2, [%rd12];
+	cvt.rn.f32.u16 	%f5, %rs2;
+	add.s64 	%rd2, %rd8, %rd1;
+	ld.global.u8 	%rs3, [%rd2];
+	cvt.rn.f32.u16 	%f1, %rs3;
+	neg.f32 	%f6, %f5;
+	div.rn.f32 	%f2, %f6, %f4;
+	setp.gt.f32 	%p2, %f2, %f3;
+	@%p2 bra 	$L__BB5_3;
+	bra.uni 	$L__BB5_2;
 
 $L__BB5_3:
+	add.f32 	%f7, %f2, %f1;
+	cvt.rzi.u32.f32 	%r11, %f7;
+	st.global.u8 	[%rd2], %r11;
+	bra.uni 	$L__BB5_4;
+
+$L__BB5_2:
+	cvt.rzi.u32.f32 	%r6, %f1;
+	cvta.to.global.u64 	%rd13, %rd6;
+	add.s64 	%rd14, %rd13, %rd1;
+	st.global.u8 	[%rd14], %r6;
+	cvta.to.global.u64 	%rd15, %rd7;
+	add.s64 	%rd16, %rd15, %rd1;
+	ld.global.u8 	%r7, [%rd16];
+	and.b32  	%r8, %r6, 255;
+	add.s32 	%r9, %r8, %r7;
+	shr.u32 	%r10, %r9, 1;
+	st.global.u8 	[%rd2], %r10;
+
+$L__BB5_4:
 	ret;
 
 }
-	// .globl	screen_sdf
-.visible .entry screen_sdf(
-	.param .u32 screen_sdf_param_0,
-	.param .u32 screen_sdf_param_1,
-	.param .f32 screen_sdf_param_2,
-	.param .f32 screen_sdf_param_3,
-	.param .f32 screen_sdf_param_4,
-	.param .f32 screen_sdf_param_5,
-	.param .f32 screen_sdf_param_6,
-	.param .u64 screen_sdf_param_7,
-	.param .u64 screen_sdf_param_8,
-	.param .u64 screen_sdf_param_9
+	// .globl	camera
+.visible .entry camera(
+	.param .u32 camera_param_0,
+	.param .f32 camera_param_1,
+	.param .f32 camera_param_2,
+	.param .u64 camera_param_3,
+	.param .u64 camera_param_4,
+	.param .u64 camera_param_5,
+	.param .u64 camera_param_6,
+	.param .u64 camera_param_7,
+	.param .u64 camera_param_8,
+	.param .u64 camera_param_9,
+	.param .u64 camera_param_10
 )
 {
 
