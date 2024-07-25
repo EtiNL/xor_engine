@@ -149,34 +149,36 @@ extern "C" __global__ void render(int num_rays, float width, float height, unsig
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
-    float radius_ray = 1;
+    float radius_ray = 1.0f;
 
     if (x < width && y < height) {
-
+        int pixel_index = 3 * (y * (int)width + x);
+        float red = 0.0f, green = 0.0f, blue = 0.0f;
         int counter = 0;
 
-        for idx = 0 < num_rays {
-            float x_ray = coordinates[2*idx];
-            float y_ray = coordinates[2*idx+1];
+        for (int idx = 0; idx < num_rays; idx++) {
+            float x_ray = coordinates[2 * idx];
+            float y_ray = coordinates[2 * idx + 1];
 
-            float dx = x_ray - x;
-            float dy = y_ray - y;
+            float dx = x_ray - (float)x;
+            float dy = y_ray - (float)y;
 
-            if (dx * dx + dy * dy <= radius_ray * radius_ray){
-
-                image[3*idx] = image[3*idx] + color_rays[3*idx];
-                image[3*idx+1] = image[3*idx+1] + color_rays[3*idx+1];
-                image[3*idx+2] = image[3*idx+2] + color_rays[3*idx+2];
-
-                counter = counter + 1;
-
+            if (dx * dx + dy * dy <= radius_ray * radius_ray) {
+                red += color_rays[3 * idx];
+                green += color_rays[3 * idx + 1];
+                blue += color_rays[3 * idx + 2];
+                counter++;
             }
         }
 
         if (counter > 0) {
-            image[3*idx] = image[3*idx] / counter;
-            image[3*idx+1] = image[3*idx+1] / counter;
-            image[3*idx+2] = image[3*idx+2] / counter;
+            red /= counter;
+            green /= counter;
+            blue /= counter;
         }
+
+        image[pixel_index] = (unsigned char)red;
+        image[pixel_index + 1] = (unsigned char)green;
+        image[pixel_index + 2] = (unsigned char)blue;
     }
 }
