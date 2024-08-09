@@ -94,91 +94,165 @@ extern "C" __global__ void newton_march(int num_rays, float epsilon_grad, unsign
     }
 }
 
+extern "C" __global__ void reflexion(int num_rays, unsigned char *D, unsigned char *O, unsigned char *T, unsigned char *surf_grad) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
+    if (idx < num_rays) {
+        float norm_surf_grad = surf_grad[3*idx] * surf_grad[3*idx] + surf_grad[3*idx + 1] * surf_grad[3*idx + 1] + surf_grad[3*idx + 2] * surf_grad[3*idx + 2];
+        float surf_grad_dot_D = (surf_grad[3*idx] * D[3*idx] + surf_grad[3*idx + 1] * D[3*idx + 1] + surf_grad[3*idx + 2] * D[3*idx + 2]) / norm_surf_grad ;
 
-extern "C" __global__ void camera(int num_rays, float width, float height, unsigned char *screen, unsigned char *u_theta, unsigned char *u_phi, unsigned char *u_rho, unsigned char *O, unsigned char *D, unsigned char *T, unsigned char *coordinates) {
+        O[3*idx] = O[3*idx] + T[idx] * D[3*idx];
+        O[3*idx + 1] = O[3*idx + 1] + T[idx] * D[3*idx + 1];
+        O[3*idx + 2] = O[3*idx + 2] + T[idx] * D[3*idx + 2];
+
+        D[3*idx] = D[3*idx] - 2 * surf_grad_dot_D * surf_grad[3*idx];
+        D[3*idx + 1] = D[3*idx + 1] - 2 * surf_grad_dot_D * surf_grad[3*idx + 1];
+        D[3*idx + 2] = D[3*idx + 2] - 2 * surf_grad_dot_D * surf_grad[3*idx + 2];
+
+        T[idx] = 0;
+    }
+}
+extern "C" __global__ void camera_diffusion(int num_rays, float width, float height, unsigned char *screen_center, unsigned char *repere_camera, unsigned char *O, unsigned char *D, unsigned char *ray_screen_collision) {
+    
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (idx < num_rays) {
 
-        float screen_x = screen[0];
-        float screen_y = screen[1];
-        float screen_z = screen[2];
+        float screen_x = screen_center[0];
+        float screen_y = screen_center[1];
+        float screen_z = screen_center[2];
 
-        float u_rho_x = u_rho[0];
-        float u_rho_y = u_rho[1];
-        float u_rho_z = u_rho[2];
+        float u_rho_x = repere_camera[0]; // sin(theta) * cos(phi)
+        float u_rho_y = repere_camera[1]; // sin(theta) * sin(phi)
+        float u_rho_z = repere_camera[2]; // cos(theta)
 
-        float ray_x = O[3*idx] + T[idx] * D[3*idx];
-        float ray_y = O[3*idx + 1] + T[idx] * D[3*idx + 1];
-        float ray_z = O[3*idx + 2] + T[idx] * D[3*idx + 2];
+        float u_theta_x = repere_camera[3]; // cos(theta) * cos(phi)
+        float u_theta_y = repere_camera[4]; // cos(theta) * sin(phi)
+        float u_theta_z = repere_camera[5]; // -sin(theta)
 
-        float sdf_screen = u_rho_x * (ray_x - screen_x) + u_rho_y * (ray_y - screen_y) + u_rho_z * (ray_z - screen_z);
-        float u_rho_dot_OR = u_rho_x * T[idx] * D[3*idx] + u_rho_y * T[idx] * D[3*idx + 1] + u_rho_z * T[idx] * D[3*idx + 2];
+        float u_phi_x = repere_camera[6]; // -sin(phi)
+        float u_phi_y = repere_camera[7]; // cos(phi)
+        float u_phi_z = repere_camera[8]; // 0
 
-        if (sdf_screen < 0 && u_rho_dot_OR < - 0.8) {
-            
-            float alpha = (1 + (1 - u_rho_x - u_rho_y - u_rho_z) / u_rho_dot_OR) * T[idx];
+        float ray_x = O[3*idx];
+        float ray_y = O[3*idx + 1];
+        float ray_z = O[3*idx + 2];
 
-            if (alpha > 0) {
-                float ray_intersect_x = alpha * D[3*idx] + O[3*idx];
-                float ray_intersect_y = alpha * D[3*idx + 1] + O[3*idx + 1];
-                float ray_intersect_z = alpha * D[3*idx + 2] + O[3*idx + 2];
+        float diffusion_coef = - (u_rho_x * D[3*idx] + u_rho_y * D[3*idx + 1] + u_rho_z * D[3*idx + 2]); // cos of the angle between - normale camera (u_rho) et ray reflected direction (modèle de Lambert)
 
-                float u_theta_x = u_theta[0];
-                float u_theta_y = u_theta[1];
-                float u_theta_z = u_theta[2];
+        if (diffusion_coef > 0.1f) {
 
-                float u_phi_x = u_phi[0];
-                float u_phi_y = u_phi[1];
-                float u_phi_z = u_phi[2];
+            float sdf_screen = u_rho_x * (ray_x - screen_x) + u_rho_y * (ray_y - screen_y) + u_rho_z * (ray_z - screen_z);
+            float x = 0.0;
+            float y = 0.0;
 
-                float ray_screen_x =  ray_intersect_x * u_phi_x + ray_intersect_y * u_phi_y + ray_intersect_z * u_phi_z + width / 2;
-                float ray_screen_y =  ray_intersect_x * u_theta_x + ray_intersect_y * u_theta_y + ray_intersect_z * u_theta_z + height / 2;
+            if (u_theta_z != 0) {
 
-                if ((fabs(ray_screen_x) < width / 2) && (fabs(ray_screen_x) < height / 2)) {
-                    coordinates[2*idx] = ray_screen_x;
-                    coordinates[2*idx + 1] = ray_screen_y;
+                y = -((1 + sdf_screen) * u_rho_z - ray_z) / u_theta_z;
+
+                if (u_phi_y != 0) { x = -(ray_y - y * u_theta_y - (1 + sdf_screen) * u_rho_y) / u_phi_y ;
                 }
+
+                else { x = ray_x / u_phi_x ;
+                }
+            }
+
+            else {
+
+                x = u_phi_x * ray_x + u_phi_y * ray_y;
+                y = u_phi_y * ray_x - u_phi_x * ray_y;
+
+                if (u_rho_z != 1.0f) {
+                    float y_flip = -y;
+                    y = y_flip;
+                }
+            }
+
+            if (fabs(x + width / 2 ) < width / 2 && fabs(y + height / 2 ) < height) {
+                
+                ray_screen_collision[4*idx] = x;
+                ray_screen_collision[4*idx + 1] = y;
+                ray_screen_collision[4*idx + 2] = diffusion_coef;
+                ray_screen_collision[4*idx + 3] = sdf_screen;
             }
         }
     }
 }
 
-extern "C" __global__ void render(int num_rays, float width, float height, unsigned char *coordinates, unsigned char *color_rays, unsigned char *image) {
+
+
+extern "C" __global__ void ray_collection(float blockDim_x, float blockDim_y, float RayDim, float GridDim_x, unsigned char *ray_screen_collision, unsigned char *Ray_collector) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
+    int z = blockIdx.z * blockDim.z + threadIdx.z;
 
     float radius_ray = 1.0f;
 
-    if (x < width && y < height) {
-        int pixel_index = 3 * (y * (int)width + x);
-        float red = 0.0f, green = 0.0f, blue = 0.0f;
-        int counter = 0;
+    if (x < blockDim_x && y < blockDim_x && z < RayDim) {
 
-        for (int idx = 0; idx < num_rays; idx++) {
-            float x_ray = coordinates[2 * idx];
-            float y_ray = coordinates[2 * idx + 1];
+        float x_ray = ray_screen_collision[4*z];
+        float y_ray = ray_screen_collision[4*z+1];
 
-            float dx = x_ray - (float)x;
-            float dy = y_ray - (float)y;
+        float P_x = fmaxf(x - blockDim_x / 2, fminf(x_ray, x + blockDim_x / 2));
+        float P_y = fmaxf(y - blockDim_y / 2, fminf(y_ray, y + blockDim_y / 2));
 
-            if (dx * dx + dy * dy <= radius_ray * radius_ray) {
-                red += color_rays[3 * idx];
-                green += color_rays[3 * idx + 1];
-                blue += color_rays[3 * idx + 2];
-                counter++;
-            }
-        }
+        float d_x = P_x - x_ray;
+        float d_y = P_y - y_ray;
 
-        if (counter > 0) {
-            red /= counter;
-            green /= counter;
-            blue /= counter;
-        }
+        float dist_block_to_ray = d_x * d_x + d_y * d_y;
 
-        image[pixel_index] = (unsigned char)red;
-        image[pixel_index + 1] = (unsigned char)green;
-        image[pixel_index + 2] = (unsigned char)blue;
+        int id = RayDim * (GridDim_x * y + x) + z;
+
+        Ray_collector[id] = (dist_block_to_ray < radius_ray) ? 1 : 0;
+        
     }
 }
+
+// extern "C" __global__ void camera_reflexion(int num_rays, float width, float height, unsigned char *screen, unsigned char *u_theta, unsigned char *u_phi, unsigned char *u_rho, unsigned char *O, unsigned char *D, unsigned char *T, unsigned char *coordinates) {
+//     int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+//     if (idx < num_rays) {
+
+//         float screen_x = screen[0];
+//         float screen_y = screen[1];
+//         float screen_z = screen[2];
+
+//         float u_rho_x = u_rho[0];
+//         float u_rho_y = u_rho[1];
+//         float u_rho_z = u_rho[2];
+
+//         float ray_x = O[3*idx] + T[idx] * D[3*idx];
+//         float ray_y = O[3*idx + 1] + T[idx] * D[3*idx + 1];
+//         float ray_z = O[3*idx + 2] + T[idx] * D[3*idx + 2];
+
+//         float sdf_screen = u_rho_x * (ray_x - screen_x) + u_rho_y * (ray_y - screen_y) + u_rho_z * (ray_z - screen_z);
+//         float u_rho_dot_OR = u_rho_x * T[idx] * D[3*idx] + u_rho_y * T[idx] * D[3*idx + 1] + u_rho_z * T[idx] * D[3*idx + 2];
+
+//         if (sdf_screen < 0 && u_rho_dot_OR < - 0.8) {
+            
+//             float alpha = (1 + (1 - u_rho_x - u_rho_y - u_rho_z) / u_rho_dot_OR) * T[idx];
+
+//             if (alpha > 0) {
+//                 float ray_intersect_x = alpha * D[3*idx] + O[3*idx];
+//                 float ray_intersect_y = alpha * D[3*idx + 1] + O[3*idx + 1];
+//                 float ray_intersect_z = alpha * D[3*idx + 2] + O[3*idx + 2];
+
+//                 float u_theta_x = u_theta[0];
+//                 float u_theta_y = u_theta[1];
+//                 float u_theta_z = u_theta[2];
+
+//                 float u_phi_x = u_phi[0];
+//                 float u_phi_y = u_phi[1];
+//                 float u_phi_z = u_phi[2];
+
+//                 float ray_screen_x =  ray_intersect_x * u_phi_x + ray_intersect_y * u_phi_y + ray_intersect_z * u_phi_z + width / 2;
+//                 float ray_screen_y =  ray_intersect_x * u_theta_x + ray_intersect_y * u_theta_y + ray_intersect_z * u_theta_z + height / 2;
+
+//                 if ((fabs(ray_screen_x) < width / 2) && (fabs(ray_screen_x) < height / 2)) {
+//                     coordinates[2*idx] = ray_screen_x;
+//                     coordinates[2*idx + 1] = ray_screen_y;
+//                 }
+//             }
+//         }
+//     }
+// }

@@ -74,14 +74,13 @@ impl CudaContext {
         }
     }
 
-    pub fn launch_kernel(
-        &self,
-        kernel_name: &str,
-        grid_dim: dim3,
-        block_dim: dim3,
-        params: Vec<*const std::ffi::c_void>,
-        stream_name: &str,
-    ) -> Result<(), Box<dyn Error>> {
+    pub fn launch_kernel(&self,
+                        kernel_name: &str,
+                        grid_dim: dim3,
+                        block_dim: dim3,
+                        params: Vec<*const std::ffi::c_void>,
+                        stream_name: &str) -> Result<(), Box<dyn Error>> {
+                            
         let stream = self.get_stream(stream_name)?;
         if let Some(&function) = self.functions.get(kernel_name) {
             unsafe {
