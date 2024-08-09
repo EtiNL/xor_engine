@@ -9,8 +9,7 @@ pub enum OperationType {
 
 pub struct Operation {
     op_type: OperationType,
-    inputs: Vec<*const f32>,
-    output: Option<*mut f32>,
+    inputs: Vec<*const c_void>,
 }
 
 pub struct ComputationGraph<'a> {
@@ -26,8 +25,8 @@ impl<'a> ComputationGraph<'a> {
         }
     }
 
-    pub fn add_operation(&mut self, op_type: OperationType, inputs: Vec<*const f32>, output: Option<*mut f32>) {
-        self.operations.push(Operation { op_type, inputs, output });
+    pub fn add_operation(&mut self, op_type: OperationType, inputs: Vec<*const c_void>) {
+        self.operations.push(Operation { op_type, inputs});
     }
 
     pub fn add_conditional_operation<F>(&mut self, condition: F, true_branch: Vec<Operation>)
@@ -37,7 +36,6 @@ impl<'a> ComputationGraph<'a> {
         self.operations.push(Operation {
             op_type: OperationType::Conditional(Box::new(condition), true_branch),
             inputs: vec![],
-            output: None,
         });
     }
 
@@ -45,15 +43,13 @@ impl<'a> ComputationGraph<'a> {
         for op in &self.operations {
             match &op.op_type {
                 OperationType::Kernel(kernel_name) => {
-                    let args: Vec<*const c_void> = op.inputs.iter().map(|&input| input as *const c_void).collect();
-                    self.cuda_context.launch_kernel(kernel_name, grid_dim, block_dim, args, "stream1")?;
+                    self.cuda_context.launch_kernel(kernel_name, grid_dim, block_dim, &op.inputs, "stream1")?;
                 }
                 OperationType::Conditional(cond, true_branch) => {
                     if cond() {
                         for sub_op in true_branch {
-                            let args: Vec<*const c_void> = sub_op.inputs.iter().map(|&input| input as *const c_void).collect();
                             if let OperationType::Kernel(kernel_name) = &sub_op.op_type {
-                                self.cuda_context.launch_kernel(kernel_name, grid_dim, block_dim, args, "stream1")?;
+                                self.cuda_context.launch_kernel(kernel_name, grid_dim, block_dim, &op.inputs, "stream1")?;
                             }
                         }
                     }

@@ -34,19 +34,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut sdl_event_pump = sdl_context.event_pump()?;
 
-    // Initialize CUDA context and load kernels
-    let mut cuda_context = CudaContext::new("./src/gpu_utils/kernel.ptx")?;
-    cuda_context.load_kernel("generate_image")?;
-    cuda_context.load_kernel("draw_circle")?;
-
-    // Create CUDA streams
-    cuda_context.create_stream("stream1")?;
-    cuda_context.create_stream("stream2")?;
-
-    // Allocate GPU memory
-    let mut image: Vec<u8> = vec![0u8; (width * height * 3) as usize];
-    let d_image = CudaContext::allocate_tensor(&image, (width * height * 3) as usize)?;
-
     let font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
     let font = ttf_context.load_font(font_path, 16)
         .map_err(|e| {
@@ -54,18 +41,66 @@ fn main() -> Result<(), Box<dyn Error>> {
             e.to_string()
         })?;
 
+    // Initialize CUDA context and load kernels
+    let mut cuda_context = CudaContext::new("./src/gpu_utils/kernel.ptx")?;
+    cuda_context.load_kernel("produit_scalaire")?;
+    cuda_context.load_kernel("light_source_init")?;
+    cuda_context.load_kernel("sdf_sphere")?;
+    cuda_context.load_kernel("grad_sdf_sphere")?;
+    cuda_context.load_kernel("ray_march")?;
+    cuda_context.load_kernel("reflexion")?;
+    cuda_context.load_kernel("camera_diffusion")?;
+    cuda_context.load_kernel("ray_collection")?;
+    cuda_context.load_kernel("render")?;
+    cuda_context.load_kernel("findMaxValue")?;
+    cuda_context.load_kernel("normalizeImage")?;
+
+    // Create CUDA streams
+    cuda_context.create_stream("stream1")?;
+    cuda_context.create_stream("stream2")?;
+
+    // Allocate GPU memory
+
+    // Image
+    let mut image: Vec<u8> = vec![0u8; (width * height * 3) as usize];
+    let d_image = CudaContext::allocate_tensor(&image, (width * height * 3) as usize)?;
+
+    // Light
+    let num_rays: u8 = 256;
+    let mut o: Vec<f32> = vec![0.0f32; num_rays*3 as usize];
+    let d_o = CudaContext::allocate_tensor(&o, num_rays*3 as usize)?;
+    let mut d: Vec<f32> = vec![0.0f32; num_rays*3 as usize];
+    let d_d = CudaContext::allocate_tensor(&d, num_rays*3 as usize)?;
+    let mut t: Vec<f32> = vec![0.0f32; num_rays as usize];
+    let d_t = CudaContext::allocate_tensor(&t, num_rays as usize)?;
+    let mut ti: Vec<f32> = vec![0.0f32; num_rays as usize];
+    let d_ti = CudaContext::allocate_tensor(&ti, num_rays as usize)?;
+    let mut tf: Vec<f32> = vec![0.0f32; num_rays as usize];
+    let d_tf = CudaContext::allocate_tensor(&tf, num_rays as usize)?;
+
+    // Ray tracing
+    let mut sdf: Vec<f32> = vec![0.0f32; num_rays as usize];
+    let d_sdf = CudaContext::allocate_tensor(&sdf, num_rays as usize)?;
+    let mut grad_sdf: Vec<f32> = vec![0.0f32; num_rays * 3 as usize];
+    let d_grad_sdf = CudaContext::allocate_tensor(&grad_sdf, num_rays * 3 as usize)?;
+    let mut grad_sdf_dot_d: Vec<f32> = vec![0.0f32; num_rays as usize];
+    let d_grad_sdf_dot_d = CudaContext::allocate_tensor(&grad_sdf_dot_d, num_rays * 3 as usize)?;
+    let epsilon_reflexion = 0.1;
+    let epsilon_bisection = 0.1;
+
+
     // Create and configure computation graph
     let mut graph = ComputationGraph::new(&cuda_context);
 
-    let sphere_x = 0.0f32;
-    let sphere_y = 10.0f32;
+    let sphere_x = 3.0f32;
+    let sphere_y = 0.0f32;
     let sphere_z = 0.0f32;
-    let radius = 5.0f32;
+    let radius = 250.0f32;
 
     let mut x_click = 0f32;
     let mut y_click = 0f32;
     let mut theta_0 = std::f32::consts::PI / 2.0;
-    let mut phi_0 = std::f32::consts::PI / 2.0;
+    let mut phi_0 = 0f32;
     let mut theta_1 = 0f32;
     let mut phi_1 = 0f32;
     let mut mouse_down = false;
@@ -147,17 +182,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         // float u_phi_z = cosf(theta);
 
         let params1 = vec![
-            &width as *const _ as *const c_void,
-            &height as *const _ as *const c_void,
-            &d_image as *const _ as *const c_void,
+            &width as *const _ as *const f32, // Change c_void to f32
+            &height as *const _ as *const f32, // Change c_void to f32
+            &d_image as *const _ as *const f32, // Change c_void to f32
         ];
 
         let params2 = vec![
-            &width as *const _ as *const c_void,
-            &height as *const _ as *const c_void,
-            &x_click as *const _ as *const c_void,
-            &y_click as *const _ as *const c_void,
-            &d_image as *const _ as *const c_void,
+            &width as *const _ as *const f32, // Change c_void to f32
+            &height as *const _ as *const f32, // Change c_void to f32
+            &x_click as *const _ as *const f32, // mouse_x
+            &y_click as *const _ as *const f32, // mouse_y
+            &d_image as *const _ as *const f32, // Change c_void to f32
         ];
 
         // Reset the graph for each frame
@@ -165,8 +200,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         // Add operations to the graph
         // graph.add_operation(OperationType::Kernel("computeDepthMap".to_string()), params_sdf.clone(), None);
-        graph.add_operation(OperationType::Kernel("generate_image".to_string()), params1.clone());
-        graph.add_operation(OperationType::Kernel("draw_circle".to_string()), params2.clone());
+        graph.add_operation(OperationType::Kernel("generate_image".to_string()), params1.clone(), None);
+        graph.add_operation(OperationType::Kernel("draw_circle".to_string()), params2.clone(), None);
 
         // Execute the computation graph
         graph.execute(grid_dim, block_dim)?;

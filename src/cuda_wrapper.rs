@@ -78,7 +78,7 @@ impl CudaContext {
                         kernel_name: &str,
                         grid_dim: dim3,
                         block_dim: dim3,
-                        params: Vec<*const std::ffi::c_void>,
+                        params: &Vec<*const std::ffi::c_void>,
                         stream_name: &str) -> Result<(), Box<dyn Error>> {
                             
         let stream = self.get_stream(stream_name)?;

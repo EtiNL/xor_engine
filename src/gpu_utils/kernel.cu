@@ -40,6 +40,22 @@ extern "C" __global__ void produit_scalaire(int num_rays, unsigned char *A, unsi
     }
 }
 
+extern "C" __global__ void light_source_init(int num_rays, unsigned char *O, unsigned char *D, unsigned char *T, unsigned char *result) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (idx < num_rays) {
+        // Compute distance from ray to sphere center
+        float dx = O[3*idx] + T[idx] * D[3*idx] - sphereX;
+        float dy = O[3*idx + 1] + T[idx] * D[3*idx + 1] - sphereY;
+        float dz = O[3*idx + 2] + T[idx] * D[3*idx + 2] - sphereZ;
+        float distance = sqrtf(dx * dx + dy * dy + dz * dz);
+
+        // Compute the SDF value and convert to depth map value
+        float sdf = distance - radius;
+        result[idx] = sdf;
+    }
+}
+
 
 
 extern "C" __global__ void sdf_sphere(int num_rays, float sphereX, float sphereY, float sphereZ, float radius, unsigned char *O, unsigned char *D, unsigned char *T, unsigned char *result) {
@@ -69,7 +85,7 @@ extern "C" __global__ void grad_sdf_sphere(int num_rays, float sphereX, float sp
 }
 
 
-extern "C" __global__ void newton_march(int num_rays, float epsilon_grad, unsigned char *Grad_sdf_dot_d, unsigned char *Sdf, unsigned char *Sdf_i, unsigned char *T, unsigned char *T_i, unsigned char *T_f) {
+extern "C" __global__ void ray_march(int num_rays, float epsilon_grad, unsigned char *Grad_sdf_dot_d, unsigned char *Sdf, unsigned char *Sdf_i, unsigned char *T, unsigned char *T_i, unsigned char *T_f) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (idx < num_rays) {
@@ -79,11 +95,11 @@ extern "C" __global__ void newton_march(int num_rays, float epsilon_grad, unsign
         float sdf_i = Sdf_i[idx];
         float t = T[idx];
 
-        float grad_step = - sdf / grad;
-
-        if (grad_step > epsilon_grad) {
-            T[idx] = t + grad_step;
+        if (grad > epsilon_grad) {
+            //Newton_Raphson
+            T[idx] = t - sdf / grad;
         } else {
+            // Bisection
             if ((sdf > 0 && sdf_i < 0) || (sdf < 0 && sdf_i > 0)) {
                 T_f[idx] = t;
             } else {
@@ -146,11 +162,11 @@ extern "C" __global__ void camera_diffusion(int num_rays, float width, float hei
             float x = 0.0;
             float y = 0.0;
 
-            if (u_theta_z != 0) {
+            if (u_theta_z != 0.0f) {
 
                 y = -((1 + sdf_screen) * u_rho_z - ray_z) / u_theta_z;
 
-                if (u_phi_y != 0) { x = -(ray_y - y * u_theta_y - (1 + sdf_screen) * u_rho_y) / u_phi_y ;
+                if (u_phi_y != 0.0f) { x = -(ray_y - y * u_theta_y - (1 + sdf_screen) * u_rho_y) / u_phi_y ;
                 }
 
                 else { x = ray_x / u_phi_x ;
@@ -181,7 +197,8 @@ extern "C" __global__ void camera_diffusion(int num_rays, float width, float hei
 
 
 
-extern "C" __global__ void ray_collection(float blockDim_x, float blockDim_y, float RayDim, float GridDim_x, unsigned char *ray_screen_collision, unsigned char *Ray_collector) {
+
+extern "C" __global__ void ray_collection(float blockDim_x, float blockDim_y, float RayDim, float GridDim_x, int max_ray_per_block, unsigned char *ray_screen_collision, unsigned char *Ray_collector, int *Ray_collector_sizes) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
     int z = blockIdx.z * blockDim.z + threadIdx.z;
@@ -201,12 +218,90 @@ extern "C" __global__ void ray_collection(float blockDim_x, float blockDim_y, fl
 
         float dist_block_to_ray = d_x * d_x + d_y * d_y;
 
-        int id = RayDim * (GridDim_x * y + x) + z;
+        int id = max_ray_per_block*(GridDim_x * y + x);
+        int blockId = GridDim_x * y + x;
 
-        Ray_collector[id] = (dist_block_to_ray < radius_ray) ? 1 : 0;
-        
+        if (dist_block_to_ray < radius_ray && Ray_collector_sizes[blockId] + 1 < max_ray_per_block){
+            int position = atomicAdd(&Ray_collector_sizes[blockId], 1);
+            Ray_collector[id + position] = z;
+        }
     }
 }
+
+extern "C" __global__ void render(int width, int height, int max_ray_per_block, unsigned char *ray_screen_collision, unsigned char *Ray_collector, int *Ray_collector_sizes, int *image) {
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (x < width && y < height) {
+
+        int id_Block = blockIdx.y * gridDim.x + blockIdx.x;
+
+        for (int i = 0; i < Ray_collector_sizes[id_Block]; i++) {
+            
+            int id_ray = Ray_collector[id_Block + i];
+
+            float x_ray = ray_screen_collision[4*id_ray];
+            float y_ray = ray_screen_collision[4*id_ray + 1];
+            float diffusion_coef = ray_screen_collision[4*id_ray + 2];
+            // float sdf_screen = ray_screen_collision[4*id_ray + 3];
+
+            float dx = x - x_ray;
+            float dy = y - y_ray;
+
+            float D = dx * dx + dy * dy;
+
+            if (D < 2.0) {
+                
+                int idx = (y * width + x) * 3;
+
+                image[idx] += diffusion_coef;     // Red channel
+                image[idx + 1] += diffusion_coef;   // Green channel
+                image[idx + 2] += diffusion_coef;   // Blue channel
+
+            }
+        }
+    }
+}
+
+__global__ void findMaxValue(const int *image, int width, int height, int *maxVal) {
+    extern __shared__ int shared_max[];
+
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    int stride = blockDim.x * gridDim.x;
+    int local_max = 0;
+
+    // Load elements into shared memory
+    for (int i = idx; i < width * height * 3; i += stride) {
+        local_max = max(local_max, image[i]);
+    }
+
+    shared_max[threadIdx.x] = local_max;
+    __syncthreads();
+
+    // Reduce within the block
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) {
+            shared_max[threadIdx.x] = max(shared_max[threadIdx.x], shared_max[threadIdx.x + s]);
+        }
+        __syncthreads();
+    }
+
+    // Store the result from this block
+    if (threadIdx.x == 0) {
+        atomicMax(maxVal, shared_max[0]);
+    }
+}
+
+__global__ void normalizeImage(int *image, int width, int height, int maxVal) {
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+
+    int size = width * height * 3;
+    if (idx < size) {
+        image[idx] = (image[idx] * 255) / maxVal;
+        image[idx] = min(image[idx], 255); // Ensure the value is capped at 255
+    }
+}
+
 
 // extern "C" __global__ void camera_reflexion(int num_rays, float width, float height, unsigned char *screen, unsigned char *u_theta, unsigned char *u_phi, unsigned char *u_rho, unsigned char *O, unsigned char *D, unsigned char *T, unsigned char *coordinates) {
 //     int idx = blockIdx.x * blockDim.x + threadIdx.x;
