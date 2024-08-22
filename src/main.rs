@@ -8,7 +8,7 @@ use sdl2::render::{BlendMode, TextureQuery};
 use std::error::Error;
 use std::ffi::c_void;
 use std::time::{Instant, Duration};
-use std::thread;
+use rand::Rng;
 
 use cuda_wrapper::{CudaContext, dim3};
 use dynamic_computation_graph::{ComputationGraph, OperationType};
@@ -34,19 +34,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut sdl_event_pump = sdl_context.event_pump()?;
 
-    // Initialize CUDA context and load kernels
-    let mut cuda_context = CudaContext::new("./src/gpu_utils/kernel.ptx")?;
-    cuda_context.load_kernel("generate_image")?;
-    cuda_context.load_kernel("draw_circle")?;
-
-    // Create CUDA streams
-    cuda_context.create_stream("stream1")?;
-    cuda_context.create_stream("stream2")?;
-
-    // Allocate GPU memory
-    let mut image: Vec<u8> = vec![0u8; (width * height * 3) as usize];
-    let d_image = CudaContext::allocate_tensor(&image, (width * height * 3) as usize)?;
-
     let font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
     let font = ttf_context.load_font(font_path, 16)
         .map_err(|e| {
@@ -54,30 +41,102 @@ fn main() -> Result<(), Box<dyn Error>> {
             e.to_string()
         })?;
 
+    // Initialize CUDA context and load kernels
+    let mut cuda_context = CudaContext::new("./src/gpu_utils/kernel.ptx")?;
+    cuda_context.load_kernel("produit_scalaire")?;
+    cuda_context.load_kernel("init_light_source")?;
+    cuda_context.load_kernel("test_norm_distrib_light_source")?;
+    cuda_context.load_kernel("sdf_sphere")?;
+    cuda_context.load_kernel("grad_sdf_sphere")?;
+    cuda_context.load_kernel("ray_march")?;
+    cuda_context.load_kernel("reflexion")?;
+    cuda_context.load_kernel("camera_diffusion")?;
+    cuda_context.load_kernel("ray_collection")?;
+    cuda_context.load_kernel("render")?;
+    cuda_context.load_kernel("findMaxValue")?;
+    cuda_context.load_kernel("normalizeImage")?;
+
+    // Create CUDA streams
+    cuda_context.create_stream("stream1")?;
+    cuda_context.create_stream("stream2")?;
+
+
+    let num_rays: u32 = 100000;
+    let mu = 300f32;
+    let sigma = 100f32;
+    let mut rng = rand::thread_rng();
+
+    let light_basis: Vec<f32> = vec![
+        0.0, 0.0, 1.0, 
+        0.0, 1.0, 0.0,
+        1.0, 0.0, 0.0
+    ];
+    let light_basis_size = light_basis.len() * std::mem::size_of::<f32>();
+    let d_light_basis = CudaContext::allocate_tensor(&light_basis, light_basis_size)?;
+
+    let mut test: Vec<f32> = vec![0.0f32; (num_rays * 2) as usize];
+    let test_size = test.len() * std::mem::size_of::<f32>();
+    let d_test = CudaContext::allocate_tensor(&test, test_size)?;
+
+    let mut o: Vec<f32> = vec![0.0f32; (num_rays * 3) as usize];
+    let o_size = o.len() * std::mem::size_of::<f32>();
+    let d_o = CudaContext::allocate_tensor(&o, o_size)?;
+
+    let mut d: Vec<f32> = vec![0.0f32; (num_rays * 3) as usize];
+    let d_size = d.len() * std::mem::size_of::<f32>();
+    let d_d = CudaContext::allocate_tensor(&d, d_size)?;
+
+    let mut t: Vec<f32> = vec![0.0f32; num_rays as usize];
+    let t_size = t.len() * std::mem::size_of::<f32>();
+    let d_t = CudaContext::allocate_tensor(&t, t_size)?;
+
+    let mut ti: Vec<f32> = vec![0.0f32; num_rays as usize];
+    let ti_size = ti.len() * std::mem::size_of::<f32>();
+    let d_ti = CudaContext::allocate_tensor(&ti, ti_size)?;
+
+    let mut tf: Vec<f32> = vec![0.0f32; num_rays as usize];
+    let tf_size = tf.len() * std::mem::size_of::<f32>();
+    let d_tf = CudaContext::allocate_tensor(&tf, tf_size)?;
+
+    let mut sdf: Vec<f32> = vec![0.0f32; num_rays as usize];
+    let sdf_size = sdf.len() * std::mem::size_of::<f32>();
+    let d_sdf = CudaContext::allocate_tensor(&sdf, sdf_size)?;
+
+    let mut grad_sdf: Vec<f32> = vec![0.0f32; (num_rays * 3) as usize];
+    let grad_sdf_size = sdf.len() * std::mem::size_of::<f32>();
+    let d_grad_sdf = CudaContext::allocate_tensor(&grad_sdf, grad_sdf_size)?;
     // Create and configure computation graph
     let mut graph = ComputationGraph::new(&cuda_context);
 
-    let sphere_x = 0.0f32;
-    let sphere_y = 10.0f32;
+    let sphere_x = 3.0f32;
+    let sphere_y = 0.0f32;
     let sphere_z = 0.0f32;
-    let radius = 5.0f32;
+    let radius = 250.0f32;
 
     let mut x_click = 0f32;
     let mut y_click = 0f32;
     let mut theta_0 = std::f32::consts::PI / 2.0;
-    let mut phi_0 = std::f32::consts::PI / 2.0;
+    let mut phi_0 = 0f32;
     let mut theta_1 = 0f32;
     let mut phi_1 = 0f32;
     let mut mouse_down = false;
-    
-    // 256 threads / blocks (max is 1024) wichs allows for up to 4 streams computing in parallel
-    let grid_dim = dim3 {
+
+    // 256 threads / blocks (max is 1024) which allows for up to 4 streams computing in parallel
+    let image_grid_dim = dim3 {
         x: ((width + 15) / 16) as u32,
         y: ((height + 15) / 16) as u32,
         z: 1,
     };
-    let block_dim = dim3 { x: 16, y: 16, z: 1 };
- 
+
+    let image_block_dim = dim3 { x: 16, y: 16, z: 1 };
+
+    let ray_grid_dim = dim3 {
+        x: ((num_rays + 255) / 256) as u32,
+        y: 1,
+        z: 1,
+    };
+    let ray_block_dim = dim3 { x: 256, y: 1, z: 1 };
+
     // Calculate FPS
     let mut last_frame = Instant::now();
     let mut frame_count = 0;
@@ -88,7 +147,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             match event {
                 Event::Quit { .. } => break 'running,
                 Event::MouseButtonDown { x, y, .. } => {
-                    if (!mouse_down) {
+                    if !mouse_down {
                         mouse_down = true;
                         x_click = x as f32;
                         y_click = y as f32;
@@ -107,75 +166,93 @@ fn main() -> Result<(), Box<dyn Error>> {
                     if mouse_down {
                         phi_1 = phi_0 + (x_click - x as f32).atan();
                         theta_1 = theta_0 + (y_click - y as f32).atan();
-                        // println!("phi: {}, theta: {}", phi_1, theta_1)
                         x_click = x as f32;
                         y_click = y as f32;
-                        println!("x: {}, y: {}", x, y)
                     }
                 },
                 _ => {}
             }
         }
 
-        // Parameters for the CUDA kernels
-        // let params_sdf = vec![
-        //     &width as *const _ as *const c_void,
-        //     &height as *const _ as *const c_void,
-        //     &sphere_x as *const _ as *const c_void,
-        //     &sphere_y as *const _ as *const c_void,
-        //     &sphere_z as *const _ as *const c_void,
-        //     &radius as *const _ as *const c_void,
-        //     &theta_1 as *const _ as *const c_void,
-        //     &phi_1 as *const _ as *const c_void,
-        //     &d_image as *const _ as *const c_void,
-        // ];
-
-        // float screen_x = sinf(theta) * cosf(phi);
-        // float screen_y = sinf(theta) * sinf(phi);
-        // float screen_z = cosf(theta);
-
-        // float u_rho_x = sinf(theta) * cosf(phi);
-        // float u_rho_y = sinf(theta) * sinf(phi);
-        // float u_rho_z = cosf(theta);
-
-        // float u_theta_x = cosf(theta) * cosf(phi);
-        // float u_theta_y = cosf(theta) * sinf(phi);
-        // float u_theta_z = - sinf(theta);
-
-        // float u_phi_x = sinf(theta) * cosf(phi);
-        // float u_phi_y = sinf(theta) * sinf(phi);
-        // float u_phi_z = cosf(theta);
-
-        let params1 = vec![
-            &width as *const _ as *const c_void,
-            &height as *const _ as *const c_void,
-            &d_image as *const _ as *const c_void,
-        ];
-
-        let params2 = vec![
-            &width as *const _ as *const c_void,
-            &height as *const _ as *const c_void,
-            &x_click as *const _ as *const c_void,
-            &y_click as *const _ as *const c_void,
-            &d_image as *const _ as *const c_void,
-        ];
-
         // Reset the graph for each frame
         graph.clear_operations();
 
+        // Allocate GPU memory
+        let mut image: Vec<u8> = vec![0u8; (width * height * 3) as usize];
+        let image_size = image.len() * std::mem::size_of::<u8>();
+        let d_image = CudaContext::allocate_tensor(&image, image_size)?;
+
+        // Seed for random number generation
+        let seed: u64 = rng.gen();  
+        let params_light_source_init = vec![
+            &d_o as *const _ as *const c_void,
+            &d_d as *const _ as *const c_void,
+            &d_light_basis as *const _ as *const c_void,
+            &num_rays as *const _ as *const c_void,
+            &mu as *const _ as *const c_void,
+            &sigma as *const _ as *const c_void,
+            &seed as *const _ as *const c_void,
+        ];
+
         // Add operations to the graph
-        // graph.add_operation(OperationType::Kernel("computeDepthMap".to_string()), params_sdf.clone(), None);
-        graph.add_operation(OperationType::Kernel("generate_image".to_string()), params1.clone());
-        graph.add_operation(OperationType::Kernel("draw_circle".to_string()), params2.clone());
+        graph.add_operation(
+            OperationType::Kernel("init_light_source".to_string()),
+            params_light_source_init.clone(),
+            ray_grid_dim,
+            ray_block_dim,
+        );
+
+        // sdf_sphere(int num_rays, float sphereX, float sphereY, float sphereZ, float radius, unsigned char *O, unsigned char *D, unsigned char *T, unsigned char *result)
+        let params_sdf_sphere = vec![
+            &num_rays as *const _ as *const c_void, 
+            &sphere_x as *const _ as *const c_void, 
+            &sphere_y as *const _ as *const c_void, 
+            &sphere_z as *const _ as *const c_void, 
+            &radius as *const _ as *const c_void, 
+            &d_o as *const _ as *const c_void, 
+            &d_d as *const _ as *const c_void, 
+            &d_t as *const _ as *const c_void, 
+            &d_sdf as *const _ as *const c_void,
+        ];
+
+        graph.add_operation(
+            OperationType::Kernel("sdf_sphere".to_string()),
+            params_sdf_sphere.clone(),
+            ray_grid_dim,
+            ray_block_dim,
+        );
+
+        // grad_sdf_sphere(int num_rays, float sphereX, float sphereY, float sphereZ, float radius, unsigned char *O, unsigned char *D, unsigned char *T, unsigned char *result)
+        let params_grad_sdf_sphere = vec![
+            &num_rays as *const _ as *const c_void, 
+            &sphere_x as *const _ as *const c_void, 
+            &sphere_y as *const _ as *const c_void, 
+            &sphere_z as *const _ as *const c_void, 
+            &radius as *const _ as *const c_void, 
+            &d_o as *const _ as *const c_void, 
+            &d_d as *const _ as *const c_void, 
+            &d_t as *const _ as *const c_void, 
+            &d_grad_sdf as *const _ as *const c_void,
+        ];
+
+        graph.add_operation(
+            OperationType::Kernel("grad_sdf_sphere".to_string()),
+            params_grad_sdf_sphere.clone(),
+            ray_grid_dim,
+            ray_block_dim,
+        );
 
         // Execute the computation graph
-        graph.execute(grid_dim, block_dim)?;
+        graph.execute()?;
 
         // Copy the result from GPU to CPU memory
-        cuda_context.retrieve_tensor(d_image, &mut image, (width * height * 3) as usize)?;
+        cuda_context.retrieve_tensor(d_image, &mut image, image_size)?;
+
+        CudaContext::free_tensor(d_image)?;
 
         // Update texture with the new image
         texture.update(None, &image, (width * 3) as usize)?;
+
         canvas.copy(&texture, None, None)?;
 
         frame_count += 1;
@@ -188,16 +265,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         // Render FPS text
         let fps_text = format!("FPS: {}", fps);
         let surface = font.render(&fps_text)
-            .blended(sdl2::pixels::Color::RGBA(255, 0, 255, 255))
-            .map_err(|e| {
-                eprintln!("Failed to render text surface: {}", e);
-                e.to_string()
-            })?;
+            .blended(sdl2::pixels::Color::RGBA(255, 255, 255, 200))
+            .map_err(|e| e.to_string())?;
         let texture = texture_creator.create_texture_from_surface(&surface)
-            .map_err(|e| {
-                eprintln!("Failed to create texture from surface: {}", e);
-                e.to_string()
-            })?;
+            .map_err(|e| e.to_string())?;
 
         let TextureQuery { width, height, .. } = texture.query();
         let target = Rect::new(128 - width as i32 - 10, 10, width, height);
@@ -205,11 +276,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         canvas.set_blend_mode(BlendMode::Blend);
         canvas.copy(&texture, None, Some(target))?;
         canvas.present();
-
-        //thread::sleep(Duration::from_millis(16)); // ~60 FPS
     }
-
-    CudaContext::free_tensor(d_image)?;
 
     Ok(())
 }

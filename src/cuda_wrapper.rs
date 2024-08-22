@@ -129,6 +129,7 @@ impl CudaContext {
     }
 }
 
+
 impl Drop for CudaContext {
     fn drop(&mut self) {
         unsafe {

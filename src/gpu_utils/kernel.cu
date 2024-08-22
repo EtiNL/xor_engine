@@ -1,3 +1,6 @@
+#include <curand_kernel.h>
+#include <stdio.h>
+
 extern "C" __global__ void generate_image(int width, int height, unsigned char *image) {
     // Use float for pixel coordinates
     int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -40,21 +43,75 @@ extern "C" __global__ void produit_scalaire(int num_rays, unsigned char *A, unsi
     }
 }
 
-extern "C" __global__ void light_source_init(int num_rays, unsigned char *O, unsigned char *D, unsigned char *T, unsigned char *result) {
+
+extern "C" __global__ void init_light_source(float *O, float *D, float *light_basis, int num_rays, float mu, float sigma, unsigned long long seed) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (idx < num_rays) {
-        // Compute distance from ray to sphere center
-        float dx = O[3*idx] + T[idx] * D[3*idx] - sphereX;
-        float dy = O[3*idx + 1] + T[idx] * D[3*idx + 1] - sphereY;
-        float dz = O[3*idx + 2] + T[idx] * D[3*idx + 2] - sphereZ;
-        float distance = sqrtf(dx * dx + dy * dy + dz * dz);
+        // Initialisation du générateur de nombres aléatoires pour chaque thread
+        curandState state;
+        curand_init(seed, idx, 0, &state);
 
-        // Compute the SDF value and convert to depth map value
-        float sdf = distance - radius;
-        result[idx] = sdf;
+        // Générer deux nombres aléatoires uniformes entre 0 et 1
+        float u1 = curand_uniform(&state);
+        float u2 = curand_uniform(&state);
+
+        // Méthode de Box-Muller pour générer deux échantillons indépendants
+        float z1 = sqrtf(-2.0f * logf(u1)) * cosf(2.0f * M_PI * u2);
+        float z2 = sqrtf(-2.0f * logf(u1)) * sinf(2.0f * M_PI * u2);
+
+        // Appliquer la moyenne et l'écart-type pour obtenir les points (x, y) de distribution normale
+        float d1 = mu + sigma * z1;
+        float d2 = mu + sigma * z2;
+        
+        // printf("Thread %d: d1 = %f, d2 = %f\n", idx, d1, d2);
+
+
+        O[3*idx] = d1 * light_basis[0] + d2 * light_basis[3];
+        O[3*idx + 1] = d1 * light_basis[1] + d2 * light_basis[4];
+        O[3*idx + 2] = d1 * light_basis[2] + d2 * light_basis[5];
+
+        D[3*idx] = light_basis[6];
+        D[3*idx + 1] = light_basis[7];
+        D[3*idx + 2] = light_basis[8];
     }
 }
+
+extern "C" __global__ void test_norm_distrib_light_source(float *test, unsigned char *image, int num_rays, int width, int height) {
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (x < width && y < height) {
+        int idx = (y * width + x) * 3;
+
+        // Add simple debug print here
+        // printf("Thread (%d, %d), idx: %d running.\n", x, y, idx);
+        // printf("width, height (%d, %d)\n", width, height);
+
+        for (int k = 0; k < num_rays; k++) {
+            float dx = test[2*k] - x;
+            float dy = test[2*k + 1] - y;
+            float d = dx*dx + dy*dy;
+            
+            // Add debug prints for values
+            // printf("Thread (%d, %d), k=%d: dx=%f, dy=%f, d=%f\n", x, y, k, dx, dy, d);
+
+            if (d < 5.0f) {
+                // printf("width, height (%d, %d)\n", width, height);
+                image[idx] = 255;
+                image[idx + 1] = 255;
+                image[idx + 2] = 255;
+            }
+
+            // else {
+            //     image[idx] = 0;
+            //     image[idx + 1] = 0;
+            //     image[idx + 2] = 0;
+            // }
+        }
+    }
+}
+
 
 
 
@@ -263,7 +320,7 @@ extern "C" __global__ void render(int width, int height, int max_ray_per_block, 
     }
 }
 
-__global__ void findMaxValue(const int *image, int width, int height, int *maxVal) {
+extern "C" __global__ void findMaxValue(const int *image, int width, int height, int *maxVal) {
     extern __shared__ int shared_max[];
 
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
@@ -292,7 +349,7 @@ __global__ void findMaxValue(const int *image, int width, int height, int *maxVa
     }
 }
 
-__global__ void normalizeImage(int *image, int width, int height, int maxVal) {
+extern "C" __global__ void normalizeImage(int *image, int width, int height, int maxVal) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
 
     int size = width * height * 3;
