@@ -3,6 +3,18 @@ use std::collections::HashMap;
 use std::ffi::CString;
 use std::ptr::null_mut;
 use std::error::Error;
+use std::ffi::c_void;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct SdfObject {
+    pub sdf_type: i32,
+    pub params: [f32; 8],
+    pub texture: *mut u8,           // pointeur vers image device
+    pub tex_width: i32,
+    pub tex_height: i32,
+    pub mapping_params: [f32; 8],   // paramètres de projection
+}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -10,6 +22,20 @@ pub struct dim3 {
     pub x: u32,
     pub y: u32,
     pub z: u32,
+}
+
+#[repr(C)]
+pub struct cudaGraphKernelNodeParams {
+    pub func: CUfunction,
+    pub gridDimX: u32,
+    pub gridDimY: u32,
+    pub gridDimZ: u32,
+    pub blockDimX: u32,
+    pub blockDimY: u32,
+    pub blockDimZ: u32,
+    pub sharedMemBytes: usize,
+    pub kernelParams: *mut *mut c_void,
+    pub extra: *mut *mut c_void,
 }
 
 pub struct CudaContext {
@@ -60,7 +86,7 @@ impl CudaContext {
     pub fn create_stream(&mut self, stream_name: &str) -> Result<(), Box<dyn Error>> {
         let mut stream = null_mut();
         unsafe {
-            check_cuda_result(cuStreamCreate(&mut stream, 0), "cuStreamCreate")?;
+            check_cuda_result(cuStreamCreate(&mut stream, 0x01), "cuStreamCreate")?; // 0x01 = cudaStreamNonBlocking
         }
         self.streams.insert(stream_name.to_string(), stream);
         Ok(())
@@ -114,7 +140,46 @@ impl CudaContext {
         Ok(d_ptr)
     }
 
-    pub fn free_tensor(d_ptr: CUdeviceptr) -> Result<(), Box<dyn Error>> {
+    pub fn allocate_struct<T>(object: &T) -> Result<CUdeviceptr, Box<dyn Error>> {
+        let mut d_ptr: CUdeviceptr = 0;
+        let size = std::mem::size_of::<T>();
+        unsafe {
+            check_cuda_result(cuMemAlloc_v2(&mut d_ptr, size), "cuMemAlloc struct")?;
+            check_cuda_result(
+                cuMemcpyHtoD_v2(d_ptr, object as *const _ as *const c_void, size),
+                "cuMemcpyHtoD struct"
+            )?;
+        }
+        Ok(d_ptr)
+    }
+
+    pub fn allocate_curand_states(width: u32, height: u32) -> Result<CUdeviceptr, Box<dyn Error>> {
+        let count = (width * height) as usize;
+        let state_size = 48; // Mesuré depuis device
+        let total_bytes = count * state_size;
+    
+        let mut device_ptr: CUdeviceptr = 0;
+        unsafe {
+            check_cuda_result(cuMemAlloc_v2(&mut device_ptr, total_bytes), "alloc curand states")?;
+        }
+    
+        Ok(device_ptr)
+    }
+
+    pub fn allocate_scene(scene: &[SdfObject]) -> Result<CUdeviceptr, Box<dyn Error>> {
+        let size = scene.len() * std::mem::size_of::<SdfObject>();
+        let mut d_ptr: CUdeviceptr = 0;
+        unsafe {
+            check_cuda_result(cuMemAlloc_v2(&mut d_ptr, size), "cuMemAlloc scene")?;
+            check_cuda_result(
+                cuMemcpyHtoD_v2(d_ptr, scene.as_ptr() as *const c_void, size),
+                "cuMemcpyHtoD scene"
+            )?;
+        }
+        Ok(d_ptr)
+    }
+
+    pub fn free_device_memory(d_ptr: CUdeviceptr) -> Result<(), Box<dyn Error>> {
         unsafe {
             check_cuda_result(cuMemFree_v2(d_ptr), "cuMemFree_v2")?;
         }
@@ -124,6 +189,83 @@ impl CudaContext {
     pub fn retrieve_tensor<T>(&self, d_ptr: CUdeviceptr, image: &mut [T], size: usize) -> Result<(), Box<dyn Error>> {
         unsafe {
             check_cuda_result(cuMemcpyDtoH_v2(image.as_mut_ptr() as *mut _, d_ptr, size), "cuMemcpyDtoH_v2")?;
+        }
+        Ok(())
+    }
+
+    pub fn create_cuda_graph(&self) -> Result<CUgraph, Box<dyn Error>> {
+        let mut graph = null_mut();
+        unsafe {
+            check_cuda_result(cuGraphCreate(&mut graph, 0), "cuGraphCreate")?;
+        }
+        Ok(graph)
+    }
+
+    pub fn add_graph_kernel_node(
+        &self,
+        graph: &mut CUgraph,
+        kernel_name: &str,
+        params: &[*const c_void],
+        grid_dim: dim3,
+        block_dim: dim3,
+        stream_name: &str
+    ) -> Result<(), Box<dyn Error>> {
+        let stream = self.get_stream(stream_name)?;
+        let function = self.functions.get(kernel_name)
+            .ok_or(format!("Kernel {} not found", kernel_name))?;
+        
+        let mut kernel_node_params = cudaGraphKernelNodeParams {
+            func: *function,
+            gridDimX: grid_dim.x,
+            gridDimY: grid_dim.y,
+            gridDimZ: grid_dim.z,
+            blockDimX: block_dim.x,
+            blockDimY: block_dim.y,
+            blockDimZ: block_dim.z,
+            sharedMemBytes: 0,
+            kernelParams: params.as_ptr() as *mut _,
+            extra: null_mut(),
+        };
+
+        let mut kernel_node = null_mut();
+        unsafe {
+            check_cuda_result(cuGraphAddKernelNode(
+                &mut kernel_node,
+                *graph,
+                null_mut(),
+                0,
+                &mut kernel_node_params as *mut cudaGraphKernelNodeParams as *const CUDA_KERNEL_NODE_PARAMS_st
+            ), "cuGraphAddKernelNode")?;
+        }
+        Ok(())
+    }
+
+    pub fn instantiate_graph(&self, graph: CUgraph) -> Result<CUgraphExec, Box<dyn Error>> {
+        let mut graph_exec = null_mut();
+        unsafe {
+            check_cuda_result(cuGraphInstantiate(&mut graph_exec, graph, null_mut(), null_mut(), 0), "cuGraphInstantiate")?;
+        }
+        Ok(graph_exec)
+    }
+
+    pub fn launch_graph(&self, graph_exec: CUgraphExec) -> Result<(), Box<dyn Error>> {
+        let stream = self.get_stream("stream1")?;  // Use any valid stream to launch the graph
+        unsafe {
+            check_cuda_result(cuGraphLaunch(graph_exec, stream), "cuGraphLaunch")?;
+        }
+        Ok(())
+    }
+
+    pub fn free_graph(&self, graph: CUgraph) -> Result<(), Box<dyn Error>> {
+        unsafe {
+            check_cuda_result(cuGraphDestroy(graph), "cuGraphDestroy")?;
+        }
+        Ok(())
+    }
+    
+    pub fn free_graph_exec(&self, graph_exec: CUgraphExec) -> Result<(), Box<dyn Error>> {
+        unsafe {
+            check_cuda_result(cuGraphExecDestroy(graph_exec), "cuGraphExecDestroy")?;
         }
         Ok(())
     }
