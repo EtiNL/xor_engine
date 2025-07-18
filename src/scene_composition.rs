@@ -51,3 +51,18 @@ impl Camera {
         }
     }
 }
+
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct SdfObject {
+    pub sdf_type: i32,
+    pub params: [f32; 3],
+    pub center: Vec3,
+    pub u: Vec3,
+    pub v: Vec3,
+    pub w: Vec3,
+    pub texture: *mut u8,           // pointeur vers image device
+    pub tex_width: i32,
+    pub tex_height: i32,
+}

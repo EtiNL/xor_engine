@@ -4,17 +4,7 @@ use std::ffi::CString;
 use std::ptr::null_mut;
 use std::error::Error;
 use std::ffi::c_void;
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-pub struct SdfObject {
-    pub sdf_type: i32,
-    pub params: [f32; 8],
-    pub texture: *mut u8,           // pointeur vers image device
-    pub tex_width: i32,
-    pub tex_height: i32,
-    pub mapping_params: [f32; 8],   // paramètres de projection
-}
+use crate::scene_composition::SdfObject;
 
 #[repr(C)]
 #[derive(Clone, Copy)]

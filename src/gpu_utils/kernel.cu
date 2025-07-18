@@ -81,11 +81,11 @@ enum SdfType {
 
 struct SdfObject {
     int sdf_type;           // 0 = sphere, ...
-    float params[8];        // general-purpose parameters
+    float params[3];        // general-purpose parameters
+    Vec3 center, u, v, w;   // center and local basis
     unsigned char* texture; // pointer to device image data
     int tex_width;          // texture width
     int tex_height;         // texture height
-    float mapping_params[8];
 };
 
 extern "C"
@@ -173,85 +173,82 @@ __device__ Vec3 grad_sdf_sphere(Vec3 sphere_center, float radius, Vec3 ray_point
     return (ray_point - sphere_center)/radius;
 }
 
-__device__ float sdf_box(Vec3 p, Vec3 center, Vec3 half_extents) {
-    Vec3 d = (p - center).abs() - half_extents;
-    return fminf(fmaxf(d.x, fmaxf(d.y, d.z)), 0.0f) + Vec3::max(d, Vec3(0,0,0)).length();
-}
-
-__device__ Vec3 grad_sdf_box(Vec3 p, Vec3 center, Vec3 half_extents) {
-    Vec3 d = (p - center);
-    Vec3 q = d.abs() - half_extents;
-
-    // gradient approximatif (analytique hors discontinuités)
-    Vec3 g = Vec3(
-        d.x >= 0.0f ? 1.0f : -1.0f,
-        d.y >= 0.0f ? 1.0f : -1.0f,
-        d.z >= 0.0f ? 1.0f : -1.0f
+__device__ float sdf_box(Vec3 p, Vec3 center, Vec3 u, Vec3 v, Vec3 w, Vec3 half_extents) {
+    Vec3 d = p - center;
+    Vec3 local = Vec3(
+        Vec3::dot(d, u),
+        Vec3::dot(d, v),
+        Vec3::dot(d, w)
     );
 
-    // Si point à l'extérieur de la box
-    if (q.x > 0.0f || q.y > 0.0f || q.z > 0.0f) {
-        Vec3 clamped = Vec3(
-            fmaxf(q.x, 0.0f),
-            fmaxf(q.y, 0.0f),
-            fmaxf(q.z, 0.0f)
-        );
-        return clamped.normalize() * g;
-    }
+    Vec3 q = local.abs() - half_extents;
+    return fminf(fmaxf(q.x, fmaxf(q.y, q.z)), 0.0f) + Vec3::max(q, Vec3(0,0,0)).length();
+}
 
-    // Sinon, on est à l'intérieur : normal vers la face la plus proche
+__device__ Vec3 grad_sdf_box(Vec3 p, Vec3 center, Vec3 u, Vec3 v, Vec3 w, Vec3 half_extents) {
+    Vec3 d = p - center;
+    Vec3 local = Vec3(
+        Vec3::dot(d, u),
+        Vec3::dot(d, v),
+        Vec3::dot(d, w)
+    );
+    Vec3 q = local.abs() - half_extents;
+
+    Vec3 g_local;
     if (q.x > q.y && q.x > q.z)
-        return Vec3(g.x, 0, 0);
+        g_local = Vec3((local.x > 0.0f) ? 1.0f : -1.0f, 0, 0);
     else if (q.y > q.z)
-        return Vec3(0, g.y, 0);
+        g_local = Vec3(0, (local.y > 0.0f) ? 1.0f : -1.0f, 0);
     else
-        return Vec3(0, 0, g.z);
+        g_local = Vec3(0, 0, (local.z > 0.0f) ? 1.0f : -1.0f);
+
+    // Remonter en coord. monde
+    return u * g_local.x + v * g_local.y + w * g_local.z;
 }
 
 __device__ float evaluate_sdf(const SdfObject& obj, Vec3 p) {
     if (obj.sdf_type == SDF_SPHERE) {
-        Vec3 center = Vec3(obj.params[0], obj.params[1], obj.params[2]);
-        float radius = obj.params[3];
-        return sdf_sphere(center, radius, p);
+        float radius = obj.params[0];
+        return sdf_sphere(obj.center, radius, p);
     } else if (obj.sdf_type == SDF_BOX) {
-        Vec3 center = Vec3(obj.params[0], obj.params[1], obj.params[2]);
-        Vec3 half_extents = Vec3(obj.params[3], obj.params[4], obj.params[5]);
-        return sdf_box(p, center, half_extents);
+        Vec3 half_extents = Vec3(obj.params[0], obj.params[1], obj.params[2]);
+        return sdf_box(p, obj.center, obj.u, obj.v, obj.w, half_extents);
     }
     return 1e9;
 }
 
 __device__ Vec3 evaluate_grad_sdf(const SdfObject& obj, Vec3 p) {
     if (obj.sdf_type == SDF_SPHERE) {
-        Vec3 center = Vec3(obj.params[0], obj.params[1], obj.params[2]);
-        float radius = obj.params[3];
-        return grad_sdf_sphere(center, radius, p);
+        float radius = obj.params[0];
+        return grad_sdf_sphere(obj.center, radius, p);
     } else if (obj.sdf_type == SDF_BOX) {
-        Vec3 center = Vec3(obj.params[0], obj.params[1], obj.params[2]);
-        Vec3 half_extents = Vec3(obj.params[3], obj.params[4], obj.params[5]);
-        return grad_sdf_box(p, center, half_extents);
+        Vec3 half_extents = Vec3(obj.params[0], obj.params[1], obj.params[2]);
+        return grad_sdf_box(p, obj.center, obj.u, obj.v, obj.w, half_extents);
     }
 }
 
-__device__ Vec2 spherical_mapping(Vec3 point, Vec3 center) {
+__device__ Vec2 spherical_mapping(Vec3 point, Vec3 center, Vec3 u, Vec3 v, Vec3 w) {
     Vec3 dir = (point - center).normalize(); // Point sur la sphère normalisée
 
-    float u = 0.5f + atan2f(dir.z, dir.x) / (2.0f * M_PI);
-    float v = 0.5f - asinf(dir.y) / M_PI;
+    Vec3 local_dir = Vec3(
+        Vec3::dot(dir, u),
+        Vec3::dot(dir, v),
+        Vec3::dot(dir, w)
+    );
 
-    return Vec2(u, v);
-}
-__device__ Vec2 blend_uv(Vec2 a, Vec2 b, float wa, float wb) {
-    return (a * wa + b * wb) / (wa + wb + 1e-5f);
+    float u_map = 0.5f + atan2f(local_dir.z, local_dir.x) / (2.0f * M_PI);
+    float v_map = 0.5f - asinf(local_dir.y) / M_PI;
+
+    return Vec2(u_map, v_map);
 }
 
-__device__ Vec3 sample_texture(const SdfObject& obj, float u, float v) {
+__device__ Vec3 sample_texture(const SdfObject& obj, Vec2 uv) {
     // Clamp u,v to [0,1]
-    u = fminf(fmaxf(u, 0.0f), 1.0f);
-    v = fminf(fmaxf(v, 0.0f), 1.0f);
+    float u = fminf(fmaxf(uv.x, 0.0f), 1.0f);
+    float v = fminf(fmaxf(uv.y, 0.0f), 1.0f);
 
-    int tex_x = static_cast<int>(u * (obj.tex_width - 1));
-    int tex_y = static_cast<int>(v * (obj.tex_height - 1));
+    int tex_x = static_cast<int>(uv.x * (obj.tex_width - 1));
+    int tex_y = static_cast<int>(uv.y * (obj.tex_height - 1));
 
     int tex_idx = (tex_y * obj.tex_width + tex_x) * 3;
 
@@ -263,8 +260,13 @@ __device__ Vec3 sample_texture(const SdfObject& obj, float u, float v) {
 }
 
 __device__ Vec3 triplanar_sample(const SdfObject& obj, Vec3 p, Vec3 normal) {
-    Vec3 local = p - Vec3(obj.params[0], obj.params[1], obj.params[2]);
-    Vec3 he = Vec3(obj.params[3], obj.params[4], obj.params[5]);
+    Vec3 d = p - obj.center;
+    Vec3 local = Vec3(
+        Vec3::dot(d, obj.u),
+        Vec3::dot(d, obj.v),
+        Vec3::dot(d, obj.w)
+    );
+    Vec3 he = Vec3(obj.params[0], obj.params[1], obj.params[2]);
 
     float blend_sharpness = 4.0f; // Higher = sharper transitions
 
@@ -282,18 +284,17 @@ __device__ Vec3 triplanar_sample(const SdfObject& obj, Vec3 p, Vec3 normal) {
     Vec2 uv_y = Vec2(local.x / (2.0f * he.x) + 0.5f, local.z / (2.0f * he.z) + 0.5f);
     Vec2 uv_z = Vec2(local.x / (2.0f * he.x) + 0.5f, local.y / (2.0f * he.y) + 0.5f);
 
-    Vec3 color_x = sample_texture(obj, uv_x.x, uv_x.y);
-    Vec3 color_y = sample_texture(obj, uv_y.x, uv_y.y);
-    Vec3 color_z = sample_texture(obj, uv_z.x, uv_z.y);
+    Vec3 color_x = sample_texture(obj, uv_x);
+    Vec3 color_y = sample_texture(obj, uv_y);
+    Vec3 color_z = sample_texture(obj, uv_z);
 
     return color_x * weights.x + color_y * weights.y + color_z * weights.z;
 }
 
 __device__ Vec3 obj_mapping(const SdfObject& obj, Vec3 p) {
     if (obj.sdf_type == SDF_SPHERE) {
-        Vec3 center = Vec3(obj.params[0], obj.params[1], obj.params[2]);
-        Vec2 uv = spherical_mapping(p, center);
-        Vec3 color = sample_texture(obj, uv.x, uv.y);
+        Vec2 uv = spherical_mapping(p, obj.center, obj.u, obj.v, obj.w);
+        Vec3 color = sample_texture(obj, uv);
         return color;
     }
     else if (obj.sdf_type == SDF_BOX) {

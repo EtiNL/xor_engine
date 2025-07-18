@@ -1,50 +1,19 @@
 mod cuda_wrapper;
-mod camera;
+mod scene_composition;
 mod texture_utils;
+mod display;
 
 use sdl2::event::Event;
-use sdl2::pixels::PixelFormatEnum;
-use sdl2::rect::Rect;
-use sdl2::render::{BlendMode, TextureQuery};
 use std::error::Error;
 use std::ffi::{c_void, CString};
 use std::sync::{Arc, Mutex};
-use std::time::{Instant, Duration};
 
-use cuda_wrapper::{CudaContext, dim3, check_cuda_result, SdfObject};
-use camera::{Camera, Vec3};
+use display::{Display, FpsCounter};
+use cuda_wrapper::{CudaContext, dim3, check_cuda_result};
+use scene_composition::{Camera, SdfObject, Vec3};
 use cuda_driver_sys::*;
 use texture_utils::load_texture;
 
-
-struct FpsCounter {
-    last_frame_time: Instant,
-    frame_count: u32,
-    last_fps: u32,
-}
-
-impl FpsCounter {
-    fn new() -> Self {
-        Self {
-            last_frame_time: Instant::now(),
-            frame_count: 0,
-            last_fps: 0,
-        }
-    }
-
-    fn update(&mut self) -> u32 {
-        self.frame_count += 1;
-        let now = Instant::now();
-
-        if now.duration_since(self.last_frame_time) >= Duration::from_secs(1) {
-            self.last_fps = self.frame_count;
-            self.frame_count = 0;
-            self.last_frame_time = now;
-        }
-
-        self.last_fps
-    }
-}
 
 fn main() -> Result<(), Box<dyn Error>> {
     // Initialize CUDA context
@@ -73,49 +42,29 @@ fn main() -> Result<(), Box<dyn Error>> {
     let wood_texture_size = wood_texture.len() * std::mem::size_of::<u8>();
     let d_wood_texture = CudaContext::allocate_tensor(&wood_texture, wood_texture_size)?;
 
-    // let scene = vec![
-    //     SdfObject {
-    //         sdf_type: 0, // sphere
-    //         params: [0.0, 0.0, -5.0, 1.0, 0.0, 0.0, 0.0, 0.0],
-    //         texture: d_wood_texture as *mut u8, 
-    //         tex_width: tex_w as i32,
-    //         tex_height: tex_h as i32,
-    //         mapping_params: [0.0; 8],
-    //     }
-    // ];
-
     let scene = vec![
         SdfObject {
-            sdf_type: 1, // BOX
-            params: [0.0, 0.0, -5.0, 1.0, 1.0, 1.0, 0.0, 0.0], // center (0,0,-5), half extents (1,1,1)
-            texture: d_wood_texture as *mut u8,
+            sdf_type: 0, // sphere
+            params: [1.0, 0.0, 0.0], // radius 1.0
+            center: Vec3 { x: 0.0, y: 0.0, z: -5.0 },     // center
+            u: Vec3 { x: 1.0, y: 0.0, z: 0.0 },           // u (right)
+            v: Vec3 { x: 0.0, y: 1.0, z: 0.0 },           // v (up)
+            w: Vec3 { x: 0.0, y: 0.0, z: -1.0 },          // w (forward)
+            texture: d_wood_texture as *mut u8, 
             tex_width: tex_w as i32,
             tex_height: tex_h as i32,
-            mapping_params: [0.0; 8],
         }
     ];
 
+
     // Initialize the SDL2 context
-    let sdl_context = sdl2::init()?;
-    let video_subsystem = sdl_context.video()?;
-    let ttf_context = sdl2::ttf::init().map_err(|e| e.to_string())?;
-
-    let window = video_subsystem
-        .window("xor Renderer", width, height)
-        .position_centered()
-        .build()
-        .expect("Failed to create window");
-
-    let mut canvas = window.into_canvas().build().expect("Failed to create canvas");
-    let texture_creator = canvas.texture_creator();
-    let mut texture = texture_creator.create_texture_streaming(PixelFormatEnum::RGB24, width, height)?;
-
-    // Load the font and start the fps counter
-    let font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";  // Ensure the font path is correct
-    let font = ttf_context.load_font(font_path, 16)?;
+    let mut display = Display::new(
+        "xor Renderer",
+        width,
+        height,
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    )?;
     let mut fps_counter = FpsCounter::new();
-
-    let mut sdl_event_pump = sdl_context.event_pump()?;
 
     // load kernels
     cuda_context.load_kernel("init_random_states")?;
@@ -174,7 +123,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Main loop
     'running: loop {
-        for event in sdl_event_pump.poll_iter() {
+        for event in display.poll_events() {
             match event {
                 Event::Quit { .. } => break 'running,
                 Event::MouseButtonDown { x, y, .. } => {
@@ -255,42 +204,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         cuda_context.free_graph(graph)?;
         cuda_context.free_graph_exec(graph_exec)?;
 
-        // Update texture with the new image
-        texture.update(None, &image, (width * 3) as usize)?;
-        canvas.copy(&texture, None, None)?;
-
-        // Calculate and render FPS
+        // display Image and fps
         let fps = fps_counter.update();
-        let fps_text = format!("FPS: {}", fps);
-        render_fps(&fps_text, &mut canvas, &texture_creator, &font)?;
-
-        canvas.present();
+        display.render_texture(&image, (width * 3) as usize)?;
+        display.render_fps(fps)?;
+        display.present();
     }
 
     CudaContext::free_device_memory(d_image)?;
-
-    Ok(())
-}
-
-fn render_fps(
-    fps_text: &str,
-    canvas: &mut sdl2::render::Canvas<sdl2::video::Window>,
-    texture_creator: &sdl2::render::TextureCreator<sdl2::video::WindowContext>,
-    font: &sdl2::ttf::Font,
-) -> Result<(), String> {
-    let surface = font
-        .render(fps_text)
-        .blended(sdl2::pixels::Color::RGBA(255, 255, 255, 200))
-        .map_err(|e| e.to_string())?;
-    let texture = texture_creator
-        .create_texture_from_surface(&surface)
-        .map_err(|e| e.to_string())?;
-
-    let TextureQuery { width, height, .. } = texture.query();
-    let target = Rect::new(128 - width as i32 - 10, 10, width, height);
-
-    canvas.set_blend_mode(BlendMode::Blend);
-    canvas.copy(&texture, None, Some(target))?;
 
     Ok(())
 }
