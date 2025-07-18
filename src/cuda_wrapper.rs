@@ -169,6 +169,12 @@ impl CudaContext {
         Ok(d_ptr)
     }
 
+    pub fn copy_host_to_device<T>(&self, dst: CUdeviceptr, src: &[T]) -> Result<(), Box<dyn Error>> {
+        let size = src.len() * std::mem::size_of::<T>();
+        unsafe { check_cuda_result(cuMemcpyHtoD_v2(dst, src.as_ptr() as *const c_void, size), "copy (cuMemcpyHtoD_v2)")?; }
+        Ok(())
+    }
+
     pub fn free_device_memory(d_ptr: CUdeviceptr) -> Result<(), Box<dyn Error>> {
         unsafe {
             check_cuda_result(cuMemFree_v2(d_ptr), "cuMemFree_v2")?;
@@ -271,5 +277,56 @@ impl Drop for CudaContext {
             cuModuleUnload(self.module);
             cuCtxDestroy_v2(self.context);
         }
+    }
+}
+
+// Gère le buffer GPU qui contient la scène.
+pub struct SceneBuffer {
+    d_ptr:    CUdeviceptr,
+    capacity: usize,            // Nombre maximum de SdfObject que le buffer peut contenir
+}
+
+impl SceneBuffer {
+    pub fn new(ctx: &CudaContext, capacity: usize) -> Result<Self, Box<dyn Error>> {
+        // alloue capacity objets, zéro au départ
+        let dummy: Vec<SdfObject> = vec![SdfObject::default(); capacity];
+        let d_ptr = CudaContext::allocate_scene(&dummy)?;
+        Ok(Self { d_ptr, capacity })
+    }
+
+    /// s’assure que `capacity >= needed`; réalloue si nécessaire
+    fn ensure_capacity(
+        &mut self,
+        ctx: &CudaContext,
+        needed: usize,
+    ) -> Result<(), Box<dyn Error>> {
+        if needed <= self.capacity { return Ok(()); }
+
+        // libère l’ancien
+        CudaContext::free_device_memory(self.d_ptr)?;
+
+        // nouvelle taille = puissance de 2 supérieure → évite de réallouer à chaque frame
+        self.capacity = needed.next_power_of_two();
+        let dummy: Vec<SdfObject> = vec![SdfObject::default(); self.capacity];
+        self.d_ptr = CudaContext::allocate_scene(&dummy)?;
+        Ok(())
+    }
+
+    pub fn upload(
+        &mut self,
+        ctx: &CudaContext,
+        objects: &[SdfObject],
+    ) -> Result<(), Box<dyn Error>> {
+        self.ensure_capacity(ctx, objects.len());
+        ctx.copy_host_to_device(self.d_ptr, objects)
+    }
+
+    pub fn ptr(&self) -> CUdeviceptr { self.d_ptr }
+
+}
+
+impl Drop for SceneBuffer {
+    fn drop(&mut self) {                                      // libère proprement
+        let _ = CudaContext::free_device_memory(self.d_ptr);
     }
 }

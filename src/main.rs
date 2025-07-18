@@ -2,17 +2,21 @@ mod cuda_wrapper;
 mod scene_composition;
 mod texture_utils;
 mod display;
+mod ecs;
 
 use sdl2::event::Event;
+use sdl2::keyboard::Keycode;
 use std::error::Error;
 use std::ffi::{c_void, CString};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use display::{Display, FpsCounter};
-use cuda_wrapper::{CudaContext, dim3, check_cuda_result};
-use scene_composition::{Camera, SdfObject, Vec3};
+use cuda_wrapper::{CudaContext,SceneBuffer, dim3, check_cuda_result};
+use scene_composition::{Camera, SdfObject, Vec3, Quat};
 use cuda_driver_sys::*;
 use texture_utils::load_texture;
+use ecs::{World, update_rotation, Transform, Renderable, Rotating};
 
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -36,25 +40,47 @@ fn main() -> Result<(), Box<dyn Error>> {
         0.0,                                       // aperture
         1.0                                        // focus_dist
     );
+
+    let mut last_frame_time = Instant::now();
     
 
-    let (wood_texture, tex_w, tex_h) = load_texture("./src/textures/Wood_texture.png")?;
+    let (wood_texture, tex_w, tex_h) = load_texture("./src/textures/lines_texture.png")?;
     let wood_texture_size = wood_texture.len() * std::mem::size_of::<u8>();
     let d_wood_texture = CudaContext::allocate_tensor(&wood_texture, wood_texture_size)?;
 
-    let scene = vec![
-        SdfObject {
-            sdf_type: 0, // sphere
-            params: [1.0, 0.0, 0.0], // radius 1.0
-            center: Vec3 { x: 0.0, y: 0.0, z: -5.0 },     // center
-            u: Vec3 { x: 1.0, y: 0.0, z: 0.0 },           // u (right)
-            v: Vec3 { x: 0.0, y: 1.0, z: 0.0 },           // v (up)
-            w: Vec3 { x: 0.0, y: 0.0, z: -1.0 },          // w (forward)
-            texture: d_wood_texture as *mut u8, 
-            tex_width: tex_w as i32,
-            tex_height: tex_h as i32,
-        }
-    ];
+    let mut world = World::new();
+
+    let  cube = world.spawn();
+    world.insert_transform(cube, Transform {
+        position: Vec3::new(0.0, 0.0, -5.0),
+        rotation: Quat::identity(),
+    });
+    world.insert_renderable(cube, Renderable {
+        sdf_type: 1,
+        params: [1.0, 1.0, 1.0],
+        texture: d_wood_texture,
+        tex_width: tex_w,
+        tex_height: tex_h,
+    });
+    world.insert_rotating(cube, Rotating {
+        speed_deg_per_sec: 30.0,
+    });
+
+    let sphere = world.spawn();
+    world.insert_transform(sphere, Transform {
+        position: Vec3::new(0.0, 0.0, -5.0),
+        rotation: Quat::identity(),
+    });
+    world.insert_renderable(sphere, Renderable {
+        sdf_type: 0,
+        params: [1.5, 0.0, 0.0],
+        texture: d_wood_texture,
+        tex_width: tex_w,
+        tex_height: tex_h,
+    });
+    world.insert_rotating(sphere, Rotating {
+        speed_deg_per_sec: 30.0,
+    });
 
 
     // Initialize the SDL2 context
@@ -76,9 +102,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     cuda_context.create_stream("stream2")?;
 
     // Allocate GPU memory
+    let mut scene_buf = SceneBuffer::new(&cuda_context, 8)?;   // 8 = capacité initiale arbitraire
+
     let d_camera = CudaContext::allocate_struct(&cam)?;
     let d_rand_states = CudaContext::allocate_curand_states(width, height)?;
-    let d_scene = CudaContext::allocate_scene(&scene)?;
 
     let mut directions: Vec<f32> = vec![0f32; (width * height * 3) as usize];
     let directions_size = directions.len() * std::mem::size_of::<f32>();
@@ -120,12 +147,33 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut x_click = 0f32;
     let mut y_click = 0f32;
     let mouse_down = Arc::new(Mutex::new(false)); // mouse_down wrapped in Arc<Mutex<_>> for thread-safe access
+    let mut rotation_dir_x_axis = 0.0f32;
+    let mut rotation_dir_y_axis = 0.0f32;
 
     // Main loop
     'running: loop {
         for event in display.poll_events() {
             match event {
                 Event::Quit { .. } => break 'running,
+                Event::KeyDown { keycode: Some(Keycode::Left), .. } => {
+                    rotation_dir_y_axis = -1.0;
+                },
+                Event::KeyDown { keycode: Some(Keycode::Right), .. } => {
+                    rotation_dir_y_axis = 1.0;
+                },
+                Event::KeyUp { keycode: Some(Keycode::Left | Keycode::Right), .. } => {
+                    rotation_dir_y_axis = 0.0;
+                },
+                Event::KeyDown { keycode: Some(Keycode::Up), .. } => {
+                    rotation_dir_x_axis = -1.0;
+                },
+                Event::KeyDown { keycode: Some(Keycode::Down), .. } => {
+                    rotation_dir_x_axis = 1.0;
+                },
+                Event::KeyUp { keycode: Some(Keycode::Up | Keycode::Down), .. } => {
+                    rotation_dir_x_axis = 0.0;
+                },
+
                 Event::MouseButtonDown { x, y, .. } => {
                     let mut mouse_down_lock = mouse_down.lock().unwrap();
                     *mouse_down_lock = true;
@@ -167,15 +215,25 @@ fn main() -> Result<(), Box<dyn Error>> {
             "stream1",
         )?;
 
-        let scene_len = scene.len();
+        let now = Instant::now();
+        let dt = now.duration_since(last_frame_time).as_secs_f32();
+        last_frame_time = now;
+        let rotation_dir: Vec3 = Vec3{x:rotation_dir_x_axis, y:rotation_dir_y_axis, z: 0.0};
+        update_rotation(&mut world, dt, rotation_dir);
+
+        // créer la scène à envoyer vers CUDA
+        let scene_cpu = world.render_scene();
+        scene_buf.upload(&cuda_context, &scene_cpu)?;
+
+        // 4. paramètres du kernel
         let params_raymarch = vec![
-            &width as *const _ as *const c_void,
-            &height as *const _ as *const c_void,
+            &width     as *const _ as *const c_void,
+            &height    as *const _ as *const c_void,
             &d_origins as *const _ as *const c_void,
             &d_directions as *const _ as *const c_void,
-            &d_scene as *const _ as *const c_void,
-            &scene_len as *const _ as *const c_void,
-            &d_image as *const _ as *const c_void,
+            &scene_buf.ptr() as *const _ as *const c_void,
+            &(scene_cpu.len() as i32) as *const _ as *const c_void,
+            &d_image   as *const _ as *const c_void,
         ];
 
         cuda_context.add_graph_kernel_node(
