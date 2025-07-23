@@ -41,6 +41,7 @@ impl FpsCounter {
     }
 }
 
+#[test]
 fn main() -> Result<(), Box<dyn Error>> {
     // Initialize the SDL2 context
     let sdl_context = sdl2::init()?;
