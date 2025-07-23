@@ -1,4 +1,4 @@
-use image::io::Reader as ImageReader;
+use image::ImageReader;
 use std::error::Error;
 
 pub fn load_texture(path: &str) -> Result<(Vec<u8>, u32, u32), Box<dyn Error>> {

@@ -17,14 +17,14 @@ pub struct dim3 {
 #[repr(C)]
 pub struct cudaGraphKernelNodeParams {
     pub func: CUfunction,
-    pub gridDimX: u32,
-    pub gridDimY: u32,
-    pub gridDimZ: u32,
-    pub blockDimX: u32,
-    pub blockDimY: u32,
-    pub blockDimZ: u32,
-    pub sharedMemBytes: usize,
-    pub kernelParams: *mut *mut c_void,
+    pub grid_dim_x: u32,
+    pub grid_dim_y: u32,
+    pub grid_dim_z: u32,
+    pub block_dim_x: u32,
+    pub block_dim_y: u32,
+    pub block_dim_z: u32,
+    pub shared_mem_bytes: usize,
+    pub kernel_params: *mut *mut c_void,
     pub extra: *mut *mut c_void,
 }
 
@@ -204,22 +204,20 @@ impl CudaContext {
         params: &[*const c_void],
         grid_dim: dim3,
         block_dim: dim3,
-        stream_name: &str
     ) -> Result<(), Box<dyn Error>> {
-        let stream = self.get_stream(stream_name)?;
         let function = self.functions.get(kernel_name)
             .ok_or(format!("Kernel {} not found", kernel_name))?;
         
         let mut kernel_node_params = cudaGraphKernelNodeParams {
             func: *function,
-            gridDimX: grid_dim.x,
-            gridDimY: grid_dim.y,
-            gridDimZ: grid_dim.z,
-            blockDimX: block_dim.x,
-            blockDimY: block_dim.y,
-            blockDimZ: block_dim.z,
-            sharedMemBytes: 0,
-            kernelParams: params.as_ptr() as *mut _,
+            grid_dim_x: grid_dim.x,
+            grid_dim_y: grid_dim.y,
+            grid_dim_z: grid_dim.z,
+            block_dim_x: block_dim.x,
+            block_dim_y: block_dim.y,
+            block_dim_z: block_dim.z,
+            shared_mem_bytes: 0,
+            kernel_params: params.as_ptr() as *mut _,
             extra: null_mut(),
         };
 
@@ -287,7 +285,7 @@ pub struct SceneBuffer {
 }
 
 impl SceneBuffer {
-    pub fn new(ctx: &CudaContext, capacity: usize) -> Result<Self, Box<dyn Error>> {
+    pub fn new(capacity: usize) -> Result<Self, Box<dyn Error>> {
         // alloue capacity objets, zéro au départ
         let dummy: Vec<SdfObject> = vec![SdfObject::default(); capacity];
         let d_ptr = CudaContext::allocate_scene(&dummy)?;
@@ -297,7 +295,6 @@ impl SceneBuffer {
     /// s’assure que `capacity >= needed`; réalloue si nécessaire
     fn ensure_capacity(
         &mut self,
-        ctx: &CudaContext,
         needed: usize,
     ) -> Result<(), Box<dyn Error>> {
         if needed <= self.capacity { return Ok(()); }
@@ -317,7 +314,7 @@ impl SceneBuffer {
         ctx: &CudaContext,
         objects: &[SdfObject],
     ) -> Result<(), Box<dyn Error>> {
-        self.ensure_capacity(ctx, objects.len());
+        self.ensure_capacity(objects.len());
         ctx.copy_host_to_device(self.d_ptr, objects)
     }
 

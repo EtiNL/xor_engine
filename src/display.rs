@@ -8,16 +8,13 @@ use sdl2::{
     ttf::{Font, Sdl2TtfContext},
 };
 
-use std::error::Error;
 use std::time::{Duration, Instant};
 
 pub struct Display {
-    pub sdl_context: Sdl,
     pub canvas: Canvas<Window>,
     pub texture: Texture<'static>,
     pub font:    Font<'static, 'static>,
     pub event_pump: sdl2::EventPump,
-    // champs gardés pour que les borrows 'static restent valides
     _texture_creator: &'static TextureCreator<WindowContext>,
     _ttf_context:     &'static Sdl2TtfContext,
 }
@@ -26,6 +23,7 @@ impl Display {
     pub fn new(
         title: &str,
         width: u32,
+        pub sdl_context: Sdl,
         height: u32,
         font_path: &str,
     ) -> Result<Self, Box<dyn std::error::Error>> {
@@ -39,7 +37,7 @@ impl Display {
         let window = video_sub.window(title, width, height)
                               .position_centered()
                               .build()?;
-        let mut canvas = window.into_canvas().build()?;
+        let canvas = window.into_canvas().build()?;
 
         // -------- leak des « créateurs » --------
         // 1. TextureCreator
@@ -58,7 +56,6 @@ impl Display {
 
         // -------- struct finale --------
         Ok(Display {
-            sdl_context,
             canvas,
             texture,
             font,
