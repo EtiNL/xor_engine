@@ -28,13 +28,6 @@ pub struct cudaGraphKernelNodeParams {
     pub extra: *mut *mut c_void,
 }
 
-fn check_cuda_result(result: CUresult, msg: &str) -> Result<(), Box<dyn std::error::Error>> {
-    if result != CUDA_SUCCESS {
-        return Err(Box::from(format!("{} failed: {:?}", msg, result)));
-    }
-    Ok(())
-}
-
 pub struct CudaContext {
     context: CUcontext,
     module: CUmodule,

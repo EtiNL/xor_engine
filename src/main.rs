@@ -4,7 +4,6 @@ mod texture_utils;
 mod display;
 mod ecs;
 
-use cuda_wrapper::{CudaContext, DeviceBuffer, KernelArg};
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
 use std::error::Error;

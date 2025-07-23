@@ -1,5 +1,4 @@
 use sdl2::{
-    Sdl,
     event::Event,
     pixels::{Color, PixelFormatEnum},
     rect::Rect,
@@ -59,15 +58,14 @@ impl Display {
             texture,
             font,
             event_pump,
-            _texture_creator: texture_creator, // garde en vie
-            _ttf_context:     ttf_context,     // garde en vie
+            _texture_creator: texture_creator,
+            _ttf_context: ttf_context, 
         })
     }
 
     pub fn render_texture(&mut self, image: &[u8], pitch: usize) -> Result<(), UpdateTextureError> {
         self.texture.update(None, image, pitch)?;
         self.canvas.copy(&self.texture, None, None).map_err(|e| {
-            // You can wrap it more formally if needed
             UpdateTextureError::SdlError(e)
         })?;
         Ok(())
