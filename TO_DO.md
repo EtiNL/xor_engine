@@ -1,5 +1,7 @@
 # Cuda_wrapper
 - remove intanciating a graph each loop and use cuGraphExecKernelNodeSetParams from cuda_driver_sys crate
+- look at dependences between node graphs
+- look at cuStreamBeginCapture_v2 to tell cuda which nodes can be launched concurently
 
 # Ray marching
 - Compare in gpu multiple spp (megakernel) vs one kernel launch per spp
