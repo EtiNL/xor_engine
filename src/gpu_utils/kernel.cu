@@ -88,6 +88,37 @@ struct SdfObject {
     int tex_height;         // texture height
 };
 
+struct Image_ray_accum {
+    int* ray_per_pixel;
+    unsigned char* image;
+};
+
+__device__ void accumulate(Image_ray_accum* acc,
+                           const Vec3& color,
+                           int pixel_idx)
+{
+    int rpp      = acc->ray_per_pixel[pixel_idx]; 
+    int new_rpp  = rpp + 1;
+    int base     = 3 * pixel_idx;
+
+    acc->image[base + 0] =
+        (acc->image[base + 0] * rpp + color.x * 255.0f) / new_rpp;
+    acc->image[base + 1] =
+        (acc->image[base + 1] * rpp + color.y * 255.0f) / new_rpp;
+    acc->image[base + 2] =
+        (acc->image[base + 2] * rpp + color.z * 255.0f) / new_rpp;
+
+    acc->ray_per_pixel[pixel_idx] = new_rpp;
+}
+
+extern "C"
+__global__ void reset_accum(int* ray_per_pixel, int total_pixels) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < total_pixels) {
+        ray_per_pixel[i] = 0;
+    }
+}
+
 extern "C"
 __global__ void init_random_states(curandState *rand_states, int width, int height, unsigned int seed) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -133,11 +164,6 @@ void generate_rays(int width, int height, Camera* cam_ptr, curandState *rand_sta
 
     curandState local_rand = rand_states[i];
 
-    // if (i == 0){
-    //         printf("Camera aperture = %d", cam.aperture);
-    //     }
-
-
     if (cam.aperture > 0.0f) {
         float lens_radius = cam.aperture * 0.5f;
         Vec3 rd = random_in_unit_disk(&local_rand) * lens_radius;
@@ -149,9 +175,6 @@ void generate_rays(int width, int height, Camera* cam_ptr, curandState *rand_sta
         rand_states[i] = local_rand;
 
     } else {
-        // if (i == 0){
-        //     printf("Aperture = 0, pinhole camera model");
-        // }
         origin = cam.position;
         direction = dir_world.normalize();
     }
@@ -306,7 +329,7 @@ __device__ Vec3 obj_mapping(const SdfObject& obj, Vec3 p) {
 
 
 extern "C" __global__
-void raymarch(int width, int height, float* origins, float* directions, SdfObject* scene, int num_objects, unsigned char *image) {
+void raymarch(int width, int height, float* origins, float* directions, SdfObject* scene, int num_objects, Image_ray_accum* image_acc) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
     int i = y * width + x;
@@ -335,10 +358,6 @@ void raymarch(int width, int height, float* origins, float* directions, SdfObjec
     float min_dist = 1e9;
 
     while (steps < max_steps) {
-        //    if ((x == width/2)&&(y==height/2)) {
-        //         float d = evaluate_sdf(scene[0], p);
-        //         printf("Step = %d: SDF = %f at p = (%f, %f, %f)\n", steps, d, p.x, p.y, p.z);
-        //     }
 
         for (int j = 0; j < num_objects; ++j) {
             float d = evaluate_sdf(scene[j], p);
@@ -370,11 +389,7 @@ void raymarch(int width, int height, float* origins, float* directions, SdfObjec
         float shade = fmaxf(0.0f, Vec3::dot(normal, light_dir));
         color = color * shade;
     }
-
-    int idx = (y * width + x) * 3;
-    image[idx + 0] = static_cast<unsigned char>(color.x * 255.0f);
-    image[idx + 1] = static_cast<unsigned char>(color.y * 255.0f);
-    image[idx + 2] = static_cast<unsigned char>(color.z * 255.0f);
+    accumulate(image_acc, color, i);
 }
 
 // Test kernels

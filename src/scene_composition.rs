@@ -164,3 +164,10 @@ impl Default for SdfObject {
         }
     }
 }
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct ImageRayAccum {
+    pub ray_per_pixel: CUdeviceptr,
+    pub image: CUdeviceptr,
+}

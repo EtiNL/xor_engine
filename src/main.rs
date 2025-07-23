@@ -7,14 +7,13 @@ mod ecs;
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
 use std::error::Error;
-use std::ffi::{c_void, CString};
+use std::ffi::c_void;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use display::{Display, FpsCounter};
-use cuda_wrapper::{CudaContext,SceneBuffer, dim3, check_cuda_result};
-use scene_composition::{Camera, SdfObject, Vec3, Quat};
-use cuda_driver_sys::*;
+use cuda_wrapper::{CudaContext,SceneBuffer, dim3};
+use scene_composition::{Camera, ImageRayAccum, Vec3, Quat};
 use texture_utils::load_texture;
 use ecs::{World, update_rotation, Transform, Renderable, Rotating};
 
@@ -23,7 +22,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Initialize CUDA context
     let mut cuda_context = CudaContext::new("./src/gpu_utils/kernel.ptx")?;
 
-    let sample_per_pixel: u32 = 16;
+    let sample_per_pixel: u32 = 10;
     let width: u32 = 800;
     let height: u32 = 600;
 
@@ -96,13 +95,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     cuda_context.load_kernel("init_random_states")?;
     cuda_context.load_kernel("generate_rays")?;
     cuda_context.load_kernel("raymarch")?;
+    cuda_context.load_kernel("reset_accum")?;
 
     // Create CUDA streams
     cuda_context.create_stream("stream1")?;
-    cuda_context.create_stream("stream2")?;
 
     // Allocate GPU memory
-    let mut scene_buf = SceneBuffer::new(&cuda_context, 8)?;   // 8 = capacité initiale arbitraire
+    let mut scene_buf = SceneBuffer::new(8)?;   // 8 = nombre de sdf object initiale arbitraire
 
     let d_camera = CudaContext::allocate_struct(&cam)?;
     let d_rand_states = CudaContext::allocate_curand_states(width, height)?;
@@ -115,9 +114,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     let origins_size = origins.len() * std::mem::size_of::<f32>();
     let d_origins = CudaContext::allocate_tensor(&origins, origins_size)?;
 
+    let total_pixels = (width * height) as usize;
+    let rays_size = total_pixels * std::mem::size_of::<i32>();
+    let d_ray_per_pixel = CudaContext::allocate_tensor(&vec![0i32; total_pixels], rays_size)?;
+
+
     let mut image: Vec<u8> = vec![0u8; (width * height * 3) as usize];
     let image_size = image.len() * std::mem::size_of::<u8>();
     let d_image = CudaContext::allocate_tensor(&image, image_size)?;
+
+    let ray_accum = ImageRayAccum {
+        ray_per_pixel: d_ray_per_pixel,
+        image: d_image,
+    };
+    let d_ray_accum = CudaContext::allocate_struct(&ray_accum)?;
 
     // grid dim and block dim
     let grid_dim = dim3 {
@@ -212,7 +222,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             &params_generate_rays,
             grid_dim,
             block_dim,
-            "stream1",
         )?;
 
         let now = Instant::now();
@@ -225,15 +234,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         let scene_cpu = world.render_scene();
         scene_buf.upload(&cuda_context, &scene_cpu)?;
 
-        // 4. paramètres du kernel
         let params_raymarch = vec![
-            &width     as *const _ as *const c_void,
-            &height    as *const _ as *const c_void,
+            &width as *const _ as *const c_void,
+            &height as *const _ as *const c_void,
             &d_origins as *const _ as *const c_void,
             &d_directions as *const _ as *const c_void,
             &scene_buf.ptr() as *const _ as *const c_void,
             &(scene_cpu.len() as i32) as *const _ as *const c_void,
-            &d_image   as *const _ as *const c_void,
+            &d_ray_accum as *const _ as *const c_void,
         ];
 
         cuda_context.add_graph_kernel_node(
@@ -242,25 +250,41 @@ fn main() -> Result<(), Box<dyn Error>> {
             &params_raymarch,
             grid_dim,
             block_dim,
-            "stream1",
         )?;
-
-        for i in 0..2 {
-            
-        }
 
         // Instantiate the CUDA graph
         let graph_exec = cuda_context.instantiate_graph(graph)?;
-
         // Launch the graph
         cuda_context.launch_graph(graph_exec)?;
+        cuda_context.synchronize("stream1");
 
+        
+        if cam.aperture > 0.0 {
+            for _i in 1..sample_per_pixel {
+                // Launch the graph
+                cuda_context.launch_graph(graph_exec)?;
+                cuda_context.synchronize("stream1");
+            }
+        }
         // Copy the result from GPU to CPU memory
         cuda_context.retrieve_tensor(d_image, &mut image, image_size)?;
 
         // After graph execution is complete
         cuda_context.free_graph(graph)?;
         cuda_context.free_graph_exec(graph_exec)?;
+
+        let reset_params = vec![
+            &d_ray_per_pixel as *const _ as *const c_void,
+            &total_pixels as *const _ as *const c_void,
+        ];
+
+        cuda_context.launch_kernel(
+            "reset_accum",
+            dim3 { x: ((total_pixels as u32 + 255) / 256), y: 1, z: 1 },
+            dim3 { x: 256, y: 1, z: 1 },
+            &reset_params,
+            "stream1",
+        )?;
 
         // display Image and fps
         let fps = fps_counter.update();
