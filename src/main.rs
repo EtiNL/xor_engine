@@ -18,58 +18,10 @@ use scene_composition::{Camera, ImageRayAccum, Vec3, Quat};
 use texture_utils::load_texture;
 use ecs::{World, update_rotation, Transform, Renderable, Rotating};
 
-<<<<<<< HEAD
 fn main() -> Result<(), Box<dyn Error>> {
-    // Initialize the SDL2 context
-    let sdl_context = sdl2::init()?;
-    let video_subsystem = sdl_context.video()?;
-    let ttf_context = sdl2::ttf::init().map_err(|e| e.to_string())?;
-
-    // Customize screen size
-    let width = 960u32;
-    let height = 540u32;
-
-    let window = video_subsystem
-        .window("XOR", width, height)
-        .position_centered()
-        .build()
-        .expect("Failed to create window");
-
-    let mut canvas = window.into_canvas().build().expect("Failed to create canvas");
-    let texture_creator = canvas.texture_creator();
-    let mut texture = texture_creator.create_texture_streaming(PixelFormatEnum::RGB24, width, height)?;
-
-    let mut sdl_event_pump = sdl_context.event_pump()?;
-
-=======
-
-fn main() -> Result<(), Box<dyn Error>> {
->>>>>>> debbug_branch
     // Initialize CUDA context
     let mut cuda_context = CudaContext::new("./src/gpu_utils/kernel.ptx")?;
 
-<<<<<<< HEAD
-    // Load a font
-    let font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"; // Replace with a path to a valid TTF file
-    let font = ttf_context.load_font(font_path, 16)
-        .map_err(|e| {
-            eprintln!("Failed to load font: {}", e);
-            e.to_string()
-        })?;
-
-    // Main loop
-    let mut last_frame = Instant::now();
-    let mut frame_count = 0;
-    let mut fps = 0;
-    let mut x_screen = 0.0f32;
-    let mut y_screen = 0.0f32;
-    let mut theta_0 = std::f32::consts::PI / 2.0;
-    let mut phi_0 = 0.0f32;
-    let mut theta_1 = 0.0f32;
-    let mut phi_1 = 0.0f32;
-    let mut mouse_down = false; // Track if mouse button is pressed
-
-=======
     let sample_per_pixel: u32 = 10;
     let width: u32 = 800;
     let height: u32 = 600;
@@ -209,7 +161,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut rotation_dir_y_axis = 0.0f32;
 
     // Main loop
->>>>>>> debbug_branch
     'running: loop {
         for event in display.poll_events() {
             match event {
@@ -234,26 +185,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 },
 
                 Event::MouseButtonDown { x, y, .. } => {
-<<<<<<< HEAD
-                    mouse_down = true;
-                    // Adjust angle based on mouse position
-                    x_screen = x as f32;
-                    y_screen = y as f32;
-                },
-                Event::MouseButtonUp { .. } => {
-                    mouse_down = false;
-                    let theta_0 = theta_1;
-                    let phi_0 = phi_1;
-                    theta_1 = 0.0f32;
-                    phi_1 = 0.0f32;
-                },
-                Event::MouseMotion { x, y, .. } => {
-                    if mouse_down {
-                        let delta_x = x as f32 - x_screen;
-                        let delta_y = y as f32 - y_screen;
-                        theta_1 = (delta_y - height as f32 / 2.0).atan();
-                        phi_1 = (delta_x - width as f32 / 2.0).atan();
-=======
+
                     let mut mouse_down_lock = mouse_down.lock().unwrap();
                     *mouse_down_lock = true;
                     x_click = x as f32;
@@ -267,60 +199,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                     if *mouse_down.lock().unwrap() {
                         x_click = x as f32;
                         y_click = y as f32;
->>>>>>> debbug_branch
                     }
                 },
                 _ => {}
             }
         }
 
-<<<<<<< HEAD
-        // Update the kernel arguments
-        let width_cuda = DeviceBuffer::new(vec![width as i32]);
-        let height_cuda = DeviceBuffer::new(vec![height as i32]);
-        let sphere_x = DeviceBuffer::new(vec![0.0f32]);
-        let sphere_y = DeviceBuffer::new(vec![10.0f32]);
-        let sphere_z = DeviceBuffer::new(vec![0.0f32]);
-        let radius = DeviceBuffer::new(vec![5.0f32]);
-        let image = DeviceBuffer::new(vec![0u8; (width * height * 3) as usize]);
-
-        let theta = DeviceBuffer::new(vec![theta_0 + theta_1]);
-        let phi = DeviceBuffer::new(vec![phi_0 + phi_1]);
-
-        let mut args: Vec<Box<dyn KernelArg>> = vec![
-            Box::new(width_cuda),
-            Box::new(height_cuda),
-            Box::new(sphere_x),
-            Box::new(sphere_y),
-            Box::new(sphere_z),
-            Box::new(radius),
-            Box::new(theta),
-            Box::new(phi),
-            Box::new(image),
-        ];
-
-        // println!("theta: {}, phi: {}", theta_0 + theta_1, phi_0 + phi_1);
-
-        // Launch the CUDA kernel
-        match cuda_context.launch_kernel(&mut args, width, height) {
-            Ok(_) => (),
-            Err(e) => eprintln!("Failed to launch CUDA kernel: {}", e),
-        }
-
-        // Update the texture with the new image data
-        let image_arg = args.last().unwrap();
-        if let Some(image_buffer) = image_arg.as_any().downcast_ref::<DeviceBuffer<u8>>() {
-            for i in 0..10 {
-                println!("{}: {}", i, image_buffer.get_host_data()[i]);
-            }
-            texture.update(None, image_buffer.get_host_data(), (width * 3) as usize)?;
-        }
-
-        // Drop all the args here
-        drop(args);
-
-        canvas.copy(&texture, None, None)?;
-=======
         // Create a CUDA graph
         let mut graph = cuda_context.create_cuda_graph()?;
 
@@ -340,7 +224,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             grid_dim,
             block_dim,
         )?;
->>>>>>> debbug_branch
 
         let now = Instant::now();
         let dt = now.duration_since(last_frame_time).as_secs_f32();
@@ -387,33 +270,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         // Copy the result from GPU to CPU memory
         cuda_context.retrieve_tensor(d_image, &mut image, image_size)?;
 
-<<<<<<< HEAD
-        // Render FPS text
-        let fps_text = format!("FPS: {}", fps);
-        let surface = font.render(&fps_text)
-                          .blended(sdl2::pixels::Color::RGBA(255, 0, 255, 255))
-                          .map_err(|e| {
-                              eprintln!("Failed to render text surface: {}", e);
-                              e.to_string()
-                          })?;
-        let fps_texture = texture_creator.create_texture_from_surface(&surface)
-                                         .map_err(|e| {
-                                             eprintln!("Failed to create texture from surface: {}", e);
-                                             e.to_string()
-                                         })?;
-        
-        let TextureQuery { width, height, .. } = fps_texture.query();
-        let target = Rect::new(128 - width as i32 - 10, 10, width, height);
-        
-        canvas.set_blend_mode(BlendMode::Blend);
-        canvas.copy(&fps_texture, None, Some(target))?;
-        
-        canvas.present();
-    }
-
-    // Drop CUDA context explicitly to unload the module and free GPU memory
-    drop(cuda_context);
-=======
         // After graph execution is complete
         cuda_context.free_graph(graph)?;
         cuda_context.free_graph_exec(graph_exec)?;
@@ -439,7 +295,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     CudaContext::free_device_memory(d_image)?;
->>>>>>> debbug_branch
 
     Ok(())
 }
