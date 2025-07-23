@@ -1,2 +1,3 @@
 /target
 Cargo.lock
+/src/gpu_utils/kernel.ptx

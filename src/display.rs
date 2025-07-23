@@ -23,7 +23,6 @@ impl Display {
     pub fn new(
         title: &str,
         width: u32,
-        pub sdl_context: Sdl,
         height: u32,
         font_path: &str,
     ) -> Result<Self, Box<dyn std::error::Error>> {
