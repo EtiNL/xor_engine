@@ -19,7 +19,7 @@
 
 # main
 - make the code more sustainable over time
--
+- make the image computation only when renderable entities & camera change
 
 # AI features
 - denoiser
