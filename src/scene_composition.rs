@@ -24,6 +24,18 @@ impl Default for Vec3 {
     }
 }
 
+// Produit Vec3 * float
+impl Mul<f32> for Vec3 {
+    type Output = Vec3;
+    fn mul(self, k: f32) -> Vec3 {
+        Vec3::new(
+            k*self.x,
+            k*self.y,
+            k*self.z,
+        )
+    }
+}
+
 // scène_composition.rs
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -90,7 +102,7 @@ fn cross(a: Vec3, b: Vec3) -> Vec3 {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub struct Camera {
+pub struct CameraObject {
     pub position: Vec3,
     pub u: Vec3,
     pub v: Vec3,
@@ -102,7 +114,7 @@ pub struct Camera {
 
 }
 
-impl Camera {
+impl CameraObject {
     pub fn new(
         position: Vec3,
         u: Vec3,

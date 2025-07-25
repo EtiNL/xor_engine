@@ -1,5 +1,6 @@
-use crate::scene_composition::{SdfObject, Vec3, Quat};
+use crate::scene_composition::{CameraObject, SdfObject, Vec3, Quat};
 use cuda_driver_sys::CUdeviceptr;
+use std::error::Error;
 
 // Entity
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -13,7 +14,6 @@ impl Entity {
 }
 
 // Components
-
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Transform {
     pub position: Vec3,
@@ -39,6 +39,17 @@ impl Default for Renderable {
         }
     }
 }
+
+#[derive(Clone, Debug)]
+pub struct Camera {
+    pub name: String,
+    pub field_of_view: f32,    // in degrees
+    pub width: u32,
+    pub height: u32,
+    pub aperture: f32,
+    pub focus_distance: f32
+}
+
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Rotating {
@@ -126,17 +137,19 @@ pub struct World {
     // component pools -----------------------------
     transforms: SparseSet<Transform>,
     velocities: SparseSet<Velocity>,
+    cameras: SparseSet<Camera>,
     colliders:  SparseSet<Collider>,
     renderables: SparseSet<Renderable>,
     rotatings: SparseSet<Rotating>,
 }
 
-impl World {
+impl World{
     pub fn new() -> Self {
         Self {
             gens: vec![],
             free: vec![],
             transforms: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![] },
+            cameras: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![] },
             velocities: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![] },
             colliders:  SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![] },
             renderables: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![] },
@@ -146,6 +159,9 @@ impl World {
 
     pub fn insert_transform(&mut self, e: Entity, t: Transform) {
         self.transforms.insert(e, t);
+    }
+    pub fn insert_camera(&mut self, e: Entity, c: Camera) {
+        self.cameras.insert(e, c);
     }
     pub fn insert_renderable(&mut self, e: Entity, r: Renderable) {
         self.renderables.insert(e, r);
@@ -181,6 +197,45 @@ impl World {
         self.colliders.remove(e);
         self.renderables.remove(e);
         self.rotatings.remove(e);
+    }
+
+    pub fn choose_camera(&self, camera_name: &str) -> Result<CameraObject, Box<dyn Error>> {
+
+        for (camera, e_idx) in self.cameras.iter() {
+            if camera_name.to_string() == camera.name {
+                let gen = self.gens.get(e_idx as usize).copied().unwrap_or(0);
+                let e = Entity { index: e_idx, generation: gen };
+
+                if let Some(tr) = self.transforms.get(e) {
+                    let rot = tr.rotation;
+                    let camera_to_render = CameraObject::new(
+                        tr.position,            // position
+                        rot * Vec3::X,          // u (right)
+                        rot * Vec3::Y,          // v (up)
+                        rot * (Vec3::Z*-1.0),   // w (forward)
+                        camera.field_of_view,
+                        camera.width,
+                        camera.height,
+                        camera.aperture,
+                        camera.focus_distance
+                    );
+
+                    return Ok(camera_to_render)
+                }
+                else {
+                    let msg = "no camera transform: cannot define the position and rotation (ecs)";
+                    return Err(Box::from(format!("{}", msg)))
+                }
+            }
+            else {
+                let msg = "no camera under that name (ecs)";
+                return Err(Box::from(format!("{}", msg)))
+            }
+        }
+        
+        let msg = "no camera defined (ecs)";
+        return Err(Box::from(format!("{}", msg)))
+        
     }
 
     pub fn render_scene(&self) -> Vec<SdfObject> {

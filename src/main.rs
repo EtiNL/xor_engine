@@ -13,21 +13,21 @@ use std::time::Instant;
 
 use display::{Display, FpsCounter};
 use cuda_wrapper::{CudaContext,SceneBuffer, dim3};
-use scene_composition::{Camera, ImageRayAccum, Vec3, Quat};
+use scene_composition::{CameraObject, ImageRayAccum, Vec3, Quat};
 use texture_utils::load_texture;
-use ecs::{World, update_rotation, Transform, Renderable, Rotating};
+use ecs::{World, update_rotation, Transform, Camera, Renderable, Rotating};
 
 fn main() -> Result<(), Box<dyn Error>> {
     // Initialize CUDA context
     let mut cuda_context = CudaContext::new("./src/gpu_utils/kernel.ptx")?;
 
-    let sample_per_pixel: u32 = 10;
+    let sample_per_pixel: u32 = 2;
     let width: u32 = 800;
     let height: u32 = 600;
 
     // Camera and Scene initialization
 
-    let cam = Camera::new(
+    let cam = CameraObject::new(
         Vec3 { x: 0.0, y: 0.0, z: 0.0 },           // position
         Vec3 { x: 1.0, y: 0.0, z: 0.0 },           // u (right)
         Vec3 { x: 0.0, y: 1.0, z: 0.0 },           // v (up)
@@ -47,6 +47,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     let d_wood_texture = CudaContext::allocate_tensor(&wood_texture, wood_texture_size)?;
 
     let mut world = World::new();
+
+    let camera = world.spawn();
+    world.insert_camera(camera, Camera {
+        name: "first".to_string(),
+        field_of_view: 45.0,    // in degrees
+        width: 800,
+        height: 600,
+        aperture: 0.0,
+        focus_distance: 1.0
+    });
+    world.insert_transform(camera, Transform {
+        position: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+        rotation: Quat::identity(), // need to be changed so z = -1
+    });
 
     let  cube = world.spawn();
     world.insert_transform(cube, Transform {
