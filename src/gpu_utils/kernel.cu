@@ -86,6 +86,7 @@ struct SdfObject {
     unsigned char* texture; // pointer to device image data
     int tex_width;          // texture width
     int tex_height;         // texture height
+    int active;             // if this sdf object is still active in the world or if it has been despawned
 };
 
 struct Image_ray_accum {
@@ -360,7 +361,12 @@ void raymarch(int width, int height, float* origins, float* directions, SdfObjec
     while (steps < max_steps) {
 
         for (int j = 0; j < num_objects; ++j) {
-            float d = evaluate_sdf(scene[j], p);
+
+            SdfObject sdf_obj = scene[j];
+            
+            if (sdf_obj.active == 0) {continue;}
+
+            float d = evaluate_sdf(sdf_obj, p);
             if (d < min_dist) {
                 min_dist = d;
                 j_min = j;

@@ -10,6 +10,7 @@ cuda-driver-sys = "0.3.0"
 rand = "0.8"
 cust = "0.3.2"
 image = "0.25"
+memoffset = "0.9"
 
 [build-dependencies]
 cc = "1.0"

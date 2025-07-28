@@ -1,6 +1,4 @@
 mod cuda_wrapper;
-mod scene_composition;
-mod texture_utils;
 mod display;
 mod ecs;
 
@@ -12,39 +10,21 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use display::{Display, FpsCounter};
-use cuda_wrapper::{CudaContext,SceneBuffer, dim3};
-use scene_composition::{CameraObject, ImageRayAccum, Vec3, Quat};
-use texture_utils::load_texture;
-use ecs::{World, update_rotation, Transform, Camera, Renderable, Rotating};
+use cuda_wrapper::{CudaContext, SceneBuffer, ImageRayAccum, dim3};
+use ecs::ecs::{World, update_rotation, Transform, Camera, Renderable, Rotating};
+use ecs::math_op::math_op::{Vec3, Quat};
+use crate::ecs::ecs_gpu_interface::ecs_gpu_interface::SdfType;
+
 
 fn main() -> Result<(), Box<dyn Error>> {
     // Initialize CUDA context
     let mut cuda_context = CudaContext::new("./src/gpu_utils/kernel.ptx")?;
 
-    let sample_per_pixel: u32 = 2;
     let width: u32 = 800;
     let height: u32 = 600;
-
-    // Camera and Scene initialization
-
-    let cam = CameraObject::new(
-        Vec3 { x: 0.0, y: 0.0, z: 0.0 },           // position
-        Vec3 { x: 1.0, y: 0.0, z: 0.0 },           // u (right)
-        Vec3 { x: 0.0, y: 1.0, z: 0.0 },           // v (up)
-        Vec3 { x: 0.0, y: 0.0, z: -1.0 },          // w (forward)
-        45.0,                                      // fov in degrees
-        width,                                     // width
-        height,                                    // height
-        0.0,                                       // aperture
-        1.0                                        // focus_dist
-    );
+    let sample_per_pixel: u32 = 2;
 
     let mut last_frame_time = Instant::now();
-    
-
-    let (wood_texture, tex_w, tex_h) = load_texture("./src/textures/lines_texture.png")?;
-    let wood_texture_size = wood_texture.len() * std::mem::size_of::<u8>();
-    let d_wood_texture = CudaContext::allocate_tensor(&wood_texture, wood_texture_size)?;
 
     let mut world = World::new();
 
@@ -52,8 +32,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     world.insert_camera(camera, Camera {
         name: "first".to_string(),
         field_of_view: 45.0,    // in degrees
-        width: 800,
-        height: 600,
+        width: width,
+        height: height,
         aperture: 0.0,
         focus_distance: 1.0
     });
@@ -62,18 +42,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         rotation: Quat::identity(), // need to be changed so z = -1
     });
 
-    let  cube = world.spawn();
+    let mut cube = world.spawn();
     world.insert_transform(cube, Transform {
         position: Vec3::new(0.0, 0.0, -5.0),
         rotation: Quat::identity(),
     });
-    world.insert_renderable(cube, Renderable {
-        sdf_type: 1,
-        params: [1.0, 1.0, 1.0],
-        texture: d_wood_texture,
-        tex_width: tex_w,
-        tex_height: tex_h,
-    });
+    world.insert_renderable(cube, Renderable::new(
+        SdfType::Cube,
+        [1.0, 1.0, 1.0], // params
+        "./src/textures/lines_texture.png",
+
+    ));
     world.insert_rotating(cube, Rotating {
         speed_deg_per_sec: 30.0,
     });
@@ -83,17 +62,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         position: Vec3::new(0.0, 0.0, -5.0),
         rotation: Quat::identity(),
     });
-    world.insert_renderable(sphere, Renderable {
-        sdf_type: 0,
-        params: [1.5, 0.0, 0.0],
-        texture: d_wood_texture,
-        tex_width: tex_w,
-        tex_height: tex_h,
-    });
+    world.insert_renderable(sphere, Renderable::new(
+        SdfType::Sphere,
+        [1.5, 0.0, 0.0], // params
+        "./src/textures/lines_texture.png",
+    ));
     world.insert_rotating(sphere, Rotating {
         speed_deg_per_sec: 30.0,
     });
-
 
     // Initialize the SDL2 context
     let mut display = Display::new(
@@ -114,9 +90,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     cuda_context.create_stream("stream1")?;
 
     // Allocate GPU memory
-    let mut scene_buf = SceneBuffer::new(8)?;   // 8 = nombre de sdf object initiale arbitraire
+    let mut scene_buf = SceneBuffer::new(2)?;   // 8 = nombre de sdf object initiale arbitraire
+    let scene_cpu = world.render_scene(scene_buf.capacity);
+    let mut first_image: bool = true;
+    scene_buf.upload(&scene_cpu)?;
 
+    let cam = world.choose_camera("first")?;
     let d_camera = CudaContext::allocate_struct(&cam)?;
+    
     let d_rand_states = CudaContext::allocate_curand_states(width, height)?;
 
     let mut directions: Vec<f32> = vec![0f32; (width * height * 3) as usize];
@@ -197,7 +178,25 @@ fn main() -> Result<(), Box<dyn Error>> {
                     rotation_dir_x_axis = 0.0;
                 },
 
+                Event::KeyDown { keycode: Some(Keycode::S), .. } => {
+                    cube = world.spawn();
+                    world.insert_transform(cube, Transform {
+                        position: Vec3::new(0.0, 0.0, -5.0),
+                        rotation: Quat::identity(),
+                    });
+                    world.insert_renderable(cube, Renderable::new(
+                        SdfType::Cube,
+                        [1.0, 1.0, 1.0], // params
+                        "./src/textures/lines_texture.png",
+
+                    ));
+                    world.insert_rotating(cube, Rotating {
+                        speed_deg_per_sec: 30.0,
+                    });
+                },
+
                 Event::MouseButtonDown { x, y, .. } => {
+                    world.despawn(cube);
 
                     let mut mouse_down_lock = mouse_down.lock().unwrap();
                     *mouse_down_lock = true;
@@ -218,93 +217,97 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
 
-        // Create a CUDA graph
-        let mut graph = cuda_context.create_cuda_graph()?;
-
-        let params_generate_rays: Vec<*const c_void> = vec![
-            &width as *const _ as *const c_void,
-            &height as *const _ as *const c_void,
-            &d_camera as *const _ as *const c_void,
-            &d_rand_states as *const _ as *const c_void,
-            &d_origins as *const _ as *const c_void,
-            &d_directions as *const _ as *const c_void,
-        ];
-        
-        cuda_context.add_graph_kernel_node(
-            &mut graph,
-            "generate_rays",
-            &params_generate_rays,
-            grid_dim,
-            block_dim,
-        )?;
-
         let now = Instant::now();
         let dt = now.duration_since(last_frame_time).as_secs_f32();
         last_frame_time = now;
-        let rotation_dir: Vec3 = Vec3{x:rotation_dir_x_axis, y:rotation_dir_y_axis, z: 0.0};
-        update_rotation(&mut world, dt, rotation_dir);
 
-        // créer la scène à envoyer vers CUDA
-        let scene_cpu = world.render_scene();
-        scene_buf.upload(&cuda_context, &scene_cpu)?;
-
-        let params_raymarch = vec![
-            &width as *const _ as *const c_void,
-            &height as *const _ as *const c_void,
-            &d_origins as *const _ as *const c_void,
-            &d_directions as *const _ as *const c_void,
-            &scene_buf.ptr() as *const _ as *const c_void,
-            &(scene_cpu.len() as i32) as *const _ as *const c_void,
-            &d_ray_accum as *const _ as *const c_void,
-        ];
-
-        cuda_context.add_graph_kernel_node(
-            &mut graph,
-            "raymarch",
-            &params_raymarch,
-            grid_dim,
-            block_dim,
-        )?;
-
-        // Instantiate the CUDA graph
-        let graph_exec = cuda_context.instantiate_graph(graph)?;
-        // Launch the graph
-        cuda_context.launch_graph(graph_exec)?;
-        cuda_context.synchronize("stream1");
-
-        
-        if cam.aperture > 0.0 {
-            for _i in 1..sample_per_pixel {
-                // Launch the graph
-                cuda_context.launch_graph(graph_exec)?;
-                cuda_context.synchronize("stream1");
-            }
+        if (rotation_dir_y_axis != 0.0) || (rotation_dir_x_axis != 0.0){
+            let rotation_dir: Vec3 = Vec3{x:rotation_dir_x_axis, y:rotation_dir_y_axis, z: 0.0};
+            update_rotation(&mut world, dt, rotation_dir);
         }
-        // Copy the result from GPU to CPU memory
-        cuda_context.retrieve_tensor(d_image, &mut image, image_size)?;
 
-        // After graph execution is complete
-        cuda_context.free_graph(graph)?;
-        cuda_context.free_graph_exec(graph_exec)?;
+        if first_image || world.update_scene(&mut scene_buf) {
 
-        let reset_params = vec![
-            &d_ray_per_pixel as *const _ as *const c_void,
-            &total_pixels as *const _ as *const c_void,
-        ];
+            // Create a CUDA graph
+            let mut graph = cuda_context.create_cuda_graph()?;
 
-        cuda_context.launch_kernel(
-            "reset_accum",
-            dim3 { x: ((total_pixels as u32 + 255) / 256), y: 1, z: 1 },
-            dim3 { x: 256, y: 1, z: 1 },
-            &reset_params,
-            "stream1",
-        )?;
+            let params_generate_rays: Vec<*const c_void> = vec![
+                &width as *const _ as *const c_void,
+                &height as *const _ as *const c_void,
+                &d_camera as *const _ as *const c_void,
+                &d_rand_states as *const _ as *const c_void,
+                &d_origins as *const _ as *const c_void,
+                &d_directions as *const _ as *const c_void,
+            ];
+            
+            cuda_context.add_graph_kernel_node(
+                &mut graph,
+                "generate_rays",
+                &params_generate_rays,
+                grid_dim,
+                block_dim,
+            )?;
+
+            let params_raymarch = vec![
+                &width as *const _ as *const c_void,
+                &height as *const _ as *const c_void,
+                &d_origins as *const _ as *const c_void,
+                &d_directions as *const _ as *const c_void,
+                &scene_buf.ptr() as *const _ as *const c_void,
+                &(scene_buf.capacity as i32) as *const _ as *const c_void,
+                &d_ray_accum as *const _ as *const c_void,
+            ];
+
+            cuda_context.add_graph_kernel_node(
+                &mut graph,
+                "raymarch",
+                &params_raymarch,
+                grid_dim,
+                block_dim,
+            )?;
+
+            // Instantiate the CUDA graph
+            let graph_exec = cuda_context.instantiate_graph(graph)?;
+            // Launch the graph
+            cuda_context.launch_graph(graph_exec)?;
+            cuda_context.synchronize("stream1");
+
+            
+            if cam.aperture > 0.0 {
+                for _i in 1..sample_per_pixel {
+                    // Launch the graph
+                    cuda_context.launch_graph(graph_exec)?;
+                    cuda_context.synchronize("stream1");
+                }
+            }
+            // Copy the result from GPU to CPU memory
+            cuda_context.retrieve_tensor(d_image, &mut image, image_size)?;
+
+            // After graph execution is complete
+            cuda_context.free_graph(graph)?;
+            cuda_context.free_graph_exec(graph_exec)?;
+
+            let reset_params = vec![
+                &d_ray_per_pixel as *const _ as *const c_void,
+                &total_pixels as *const _ as *const c_void,
+            ];
+
+            cuda_context.launch_kernel(
+                "reset_accum",
+                dim3 { x: ((total_pixels as u32 + 255) / 256), y: 1, z: 1 },
+                dim3 { x: 256, y: 1, z: 1 },
+                &reset_params,
+                "stream1",
+            )?;
+        }
 
         // display Image and fps
         let fps = fps_counter.update();
         display.render_texture(&image, (width * 3) as usize)?;
         display.render_fps(fps)?;
         display.present();
+
+        if first_image { first_image = false;}
     }
 
     CudaContext::free_device_memory(d_image)?;

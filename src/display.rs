@@ -6,7 +6,6 @@ use sdl2::{
     video::{Window, WindowContext},
     ttf::{Font, Sdl2TtfContext},
 };
-
 use std::time::{Duration, Instant};
 
 pub struct Display {
