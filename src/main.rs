@@ -65,7 +65,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     world.insert_renderable(sphere, Renderable::new(
         SdfType::Sphere,
         [1.5, 0.0, 0.0], // params
-        "./src/textures/lines_texture.png",
+        "./src/textures/Wood_texture.png",
     ));
     world.insert_rotating(sphere, Rotating {
         speed_deg_per_sec: 30.0,
@@ -90,7 +90,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     cuda_context.create_stream("stream1")?;
 
     // Allocate GPU memory
-    let mut scene_buf = SceneBuffer::new(2)?;   // 8 = nombre de sdf object initiale arbitraire
+    let mut scene_buf = SceneBuffer::new(3)?;   // 8 = nombre de sdf object initiale arbitraire
     let scene_cpu = world.render_scene(scene_buf.capacity);
     let mut first_image: bool = true;
     scene_buf.upload(&scene_cpu)?;
@@ -146,6 +146,47 @@ fn main() -> Result<(), Box<dyn Error>> {
         block_dim, 
         &init_rng_params, 
         "stream1")?;
+
+    // Create a CUDA graph
+    let mut graph = cuda_context.create_cuda_graph()?;
+
+    let params_generate_rays: Vec<*const c_void> = vec![
+        &width as *const _ as *const c_void,
+        &height as *const _ as *const c_void,
+        &d_camera as *const _ as *const c_void,
+        &d_rand_states as *const _ as *const c_void,
+        &d_origins as *const _ as *const c_void,
+        &d_directions as *const _ as *const c_void,
+    ];
+    
+    cuda_context.add_graph_kernel_node(
+        &mut graph,
+        "generate_rays",
+        &params_generate_rays,
+        grid_dim,
+        block_dim,
+    )?;
+
+    let params_raymarch = vec![
+        &width as *const _ as *const c_void,
+        &height as *const _ as *const c_void,
+        &d_origins as *const _ as *const c_void,
+        &d_directions as *const _ as *const c_void,
+        &scene_buf.ptr() as *const _ as *const c_void,
+        &(scene_buf.capacity as i32) as *const _ as *const c_void,
+        &d_ray_accum as *const _ as *const c_void,
+    ];
+
+    cuda_context.add_graph_kernel_node(
+        &mut graph,
+        "raymarch",
+        &params_raymarch,
+        grid_dim,
+        block_dim,
+    )?;
+
+    // Instantiate the CUDA graph
+    let graph_exec = cuda_context.instantiate_graph(graph)?;
 
     // Parameters to be used in the graph
     let mut x_click = 0f32;
@@ -227,47 +268,23 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
 
         if first_image || world.update_scene(&mut scene_buf) {
-
-            // Create a CUDA graph
-            let mut graph = cuda_context.create_cuda_graph()?;
-
-            let params_generate_rays: Vec<*const c_void> = vec![
-                &width as *const _ as *const c_void,
-                &height as *const _ as *const c_void,
-                &d_camera as *const _ as *const c_void,
-                &d_rand_states as *const _ as *const c_void,
-                &d_origins as *const _ as *const c_void,
-                &d_directions as *const _ as *const c_void,
-            ];
-            
-            cuda_context.add_graph_kernel_node(
-                &mut graph,
-                "generate_rays",
-                &params_generate_rays,
-                grid_dim,
-                block_dim,
-            )?;
-
-            let params_raymarch = vec![
-                &width as *const _ as *const c_void,
-                &height as *const _ as *const c_void,
-                &d_origins as *const _ as *const c_void,
-                &d_directions as *const _ as *const c_void,
-                &scene_buf.ptr() as *const _ as *const c_void,
+            //reset params scene_buffer pointer that changes when it needs more sloths for sdfobject for the raymarch kernel
+            let new_scene_ptr = scene_buf.ptr();
+            let new_params_raymarch: Vec<*const c_void> = vec![
+                &width                  as *const _ as *const c_void,
+                &height                 as *const _ as *const c_void,
+                &d_origins              as *const _ as *const c_void,
+                &d_directions           as *const _ as *const c_void,
+                &new_scene_ptr          as *const _ as *const c_void,
                 &(scene_buf.capacity as i32) as *const _ as *const c_void,
-                &d_ray_accum as *const _ as *const c_void,
+                &d_ray_accum            as *const _ as *const c_void,
             ];
-
-            cuda_context.add_graph_kernel_node(
-                &mut graph,
+            cuda_context.exec_kernel_node_set_params(
+                graph_exec,
                 "raymarch",
-                &params_raymarch,
-                grid_dim,
-                block_dim,
+                &new_params_raymarch,
             )?;
 
-            // Instantiate the CUDA graph
-            let graph_exec = cuda_context.instantiate_graph(graph)?;
             // Launch the graph
             cuda_context.launch_graph(graph_exec)?;
             cuda_context.synchronize("stream1");
@@ -282,10 +299,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             // Copy the result from GPU to CPU memory
             cuda_context.retrieve_tensor(d_image, &mut image, image_size)?;
-
-            // After graph execution is complete
-            cuda_context.free_graph(graph)?;
-            cuda_context.free_graph_exec(graph_exec)?;
 
             let reset_params = vec![
                 &d_ray_per_pixel as *const _ as *const c_void,
@@ -311,6 +324,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     CudaContext::free_device_memory(d_image)?;
+    
+    // After graph execution is complete
+    cuda_context.free_graph(graph)?;
+    cuda_context.free_graph_exec(graph_exec)?;
 
     Ok(())
 }

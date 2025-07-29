@@ -1,5 +1,4 @@
 # Cuda_wrapper
-- remove intanciating a graph each loop and use cuGraphExecKernelNodeSetParams from cuda_driver_sys crate
 - look at dependences between node graphs / conditionnal nodes (if/while/switch)
 - look at cuStreamBeginCapture_v2 to tell cuda which nodes can be launched concurently
 - add sdf deformation/union/intersection... lattice creation

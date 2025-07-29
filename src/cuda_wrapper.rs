@@ -30,6 +30,7 @@ pub struct CudaContext {
     module: CUmodule,
     functions: HashMap<String, CUfunction>,
     streams: HashMap<String, CUstream>,
+    kernel_nodes: HashMap<String, CUgraphNode>,
 }
 
 pub fn check_cuda_result(result: CUresult, msg: &str) -> Result<(), Box<dyn Error>> {
@@ -56,6 +57,7 @@ impl CudaContext {
                 module,
                 functions: HashMap::new(),
                 streams: HashMap::new(),
+                kernel_nodes: HashMap::new(),
             })
         }
     }
@@ -195,7 +197,7 @@ impl CudaContext {
     }
 
     pub fn add_graph_kernel_node(
-        &self,
+        &mut self,
         graph: &mut CUgraph,
         kernel_name: &str,
         params: &[*const c_void],
@@ -228,6 +230,9 @@ impl CudaContext {
                 &mut kernel_node_params as *mut cudaGraphKernelNodeParams as *const CUDA_KERNEL_NODE_PARAMS_st
             ), "cuGraphAddKernelNode")?;
         }
+        
+        self.kernel_nodes.insert(kernel_name.to_owned(), kernel_node);
+        
         Ok(())
     }
 
@@ -257,6 +262,34 @@ impl CudaContext {
     pub fn free_graph_exec(&self, graph_exec: CUgraphExec) -> Result<(), Box<dyn Error>> {
         unsafe {
             check_cuda_result(cuGraphExecDestroy(graph_exec), "cuGraphExecDestroy")?;
+        }
+        Ok(())
+    }
+
+    pub fn exec_kernel_node_set_params(
+        &self,
+        graph_exec: CUgraphExec,
+        node_name:  &str,
+        new_params: &[*const c_void],
+    ) -> Result<(), Box<dyn Error>> {
+        // look up the node we saved earlier
+        let node = *self.kernel_nodes
+                        .get(node_name)
+                        .ok_or(format!("node {} not found", node_name))?;
+
+        // fetch the current params so we keep gridDim, blockDim, etc. unchanged
+        let mut p: CUDA_KERNEL_NODE_PARAMS = unsafe { std::mem::zeroed() };
+        unsafe { check_cuda_result(cuGraphKernelNodeGetParams(node, &mut p),
+                                   "cuGraphKernelNodeGetParams")?; }
+
+        // patch only the kernelParams pointer array
+        p.kernelParams = new_params.as_ptr() as *mut *mut c_void;
+
+        unsafe {
+            check_cuda_result(
+                cuGraphExecKernelNodeSetParams(graph_exec, node, &p),
+                "cuGraphExecKernelNodeSetParams"
+            )?;
         }
         Ok(())
     }
