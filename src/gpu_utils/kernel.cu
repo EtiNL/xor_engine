@@ -351,14 +351,16 @@ void raymarch(int width, int height, float* origins, float* directions, SdfObjec
 
     Vec3 p = origin;
     float total_dist = 0.0f;
-    const float eps = 0.0001f;
+    const float eps = 0.001f;
     const float max_dist = 6.0f;
     const int max_steps = 100;
     int steps = 0;
     int j_min = -1;
-    float min_dist = 1e9;
+    float   min_dist = 1e20f;
 
     while (steps < max_steps) {
+        min_dist = 1e20f;
+        j_min    = -1;
 
         for (int j = 0; j < num_objects; ++j) {
 
@@ -383,7 +385,10 @@ void raymarch(int width, int height, float* origins, float* directions, SdfObjec
 
     Vec3 color;
     SdfObject hit_object;
-    if (eps < min_dist ){
+    
+    bool hit = (min_dist < eps && j_min >= 0);
+
+    if (!hit){
         color = Vec3(0.0, 0.0, 0.0);
     } else {
         hit_object = scene[j_min];

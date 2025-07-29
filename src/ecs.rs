@@ -435,8 +435,6 @@ pub mod ecs {
                         self.empty_spaces_indices_queu.remove(0)
                     } else {
                         scene_buf.ensure_capacity(self.entity_to_scene_index.len() + 1);
-                        self.empty_spaces_indices_queu
-                            .extend(self.entity_to_scene_index.len()..scene_buf.capacity);
                         let new_scene = self.render_scene(scene_buf.capacity);
                         scene_buf.upload(&new_scene);
                         scene_updated = true;
@@ -449,6 +447,8 @@ pub mod ecs {
                     scene_updated = true;
                 }
             }
+
+            self.spawned_entities.clear();
 
             return scene_updated
         }
