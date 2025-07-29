@@ -312,6 +312,7 @@ impl Drop for CudaContext {
 pub struct SceneBuffer {
     d_ptr:    CUdeviceptr,
     pub capacity: usize,            // Nombre maximum de SdfObject que le buffer peut contenir
+    pub max_index_used: usize,
 }
 
 impl SceneBuffer {
@@ -319,7 +320,8 @@ impl SceneBuffer {
         // alloue capacity objets, zéro au départ
         let dummy: Vec<SdfObject> = vec![SdfObject::default(); capacity];
         let d_ptr = CudaContext::allocate_scene(&dummy)?;
-        Ok(Self { d_ptr, capacity })
+        let max_index_used = 0;
+        Ok(Self { d_ptr, capacity, max_index_used })
     }
 
     /// s’assure que `capacity >= needed`; réalloue si nécessaire
@@ -345,6 +347,9 @@ impl SceneBuffer {
     ) -> Result<(), Box<dyn Error>> {
         
         self.ensure_capacity(objects.len());
+        if self.max_index_used < objects.len(){
+            self.max_index_used = objects.len()
+        }
         CudaContext::copy_host_to_device(self.d_ptr, objects)
     }
 
@@ -379,8 +384,6 @@ impl SceneBuffer {
         let dst = self.ptr() + byte_off as CUdeviceptr;
 
         let zero: u32 = 0;
-
-        println!("deactivate");
 
         unsafe {
             check_cuda_result(cuMemcpyHtoD_v2(dst, &zero as *const _ as *const _, std::mem::size_of::<u32>() as usize), "deactivate in SceneBuffer");

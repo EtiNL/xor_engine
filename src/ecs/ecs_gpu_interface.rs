@@ -1,6 +1,6 @@
 pub mod ecs_gpu_interface {
 
-    use std::error::Error;
+    use std::{error::Error, collections::HashMap, path::PathBuf, path::Path};
     use image::ImageReader;
     use cuda_driver_sys::CUdeviceptr;
     use crate::ecs::math_op::math_op::Vec3;
@@ -98,12 +98,71 @@ pub mod ecs_gpu_interface {
         }
     }
 
-    pub fn load_texture(path: &str) -> Result<(CUdeviceptr, u32, u32), Box<dyn Error>> {
-        let img = ImageReader::open(path)?.decode()?.to_rgb8();
-        let (width, height) = img.dimensions();
-        let buffer = img.into_raw(); // Vec<u8>
-        let texture_size = buffer.len() * std::mem::size_of::<u8>();
-        let d_texture = CudaContext::allocate_tensor(&buffer, texture_size)?;
-        Ok((d_texture, width, height))
+    #[derive(Clone, Debug, Copy)]
+    pub struct TextureHandle {
+        pub d_ptr:  CUdeviceptr,
+        pub width:  u32,
+        pub height: u32,
+        id:         usize,        // identifiant unique
+    }
+    impl Default for TextureHandle {
+        fn default() -> Self {
+            TextureHandle {
+                d_ptr:  0,
+                width:  0,
+                height: 0,
+                id:     0,  
+            }
+        }
+    }
+
+    struct Entry {
+        handle:    TextureHandle,
+        ref_count: usize,
+    }
+
+    pub struct TextureManager {
+        next_id: usize,
+        cache:   HashMap<PathBuf, Entry>,
+    }
+
+    impl TextureManager {
+        pub fn new() -> Self { Self { next_id: 1, cache: HashMap::new() } }
+    
+        pub fn load(&mut self, path: &Path) -> Result<TextureHandle, Box<dyn Error>> {
+            if let Some(e) = self.cache.get_mut(path) {
+                e.ref_count += 1;
+                return Ok(e.handle.clone());
+            }
+
+            let img = ImageReader::open(path)?.decode()?.to_rgb8();
+            let (w, h) = img.dimensions();
+            let buffer = img.into_raw();
+            let bytes   = buffer.len() * std::mem::size_of::<u8>();
+            let d_ptr   = CudaContext::allocate_tensor(&buffer, bytes)?;
+
+            let handle = TextureHandle { d_ptr, width: w, height: h, id: self.next_id };
+            self.next_id += 1;
+
+            self.cache.insert(path.to_path_buf(), Entry { handle: handle.clone(), ref_count: 1 });
+            Ok(handle)
+        }
+
+        pub fn release(&mut self, h: &TextureHandle) -> Result<(), Box<dyn Error>> {
+        // find the path whose entry owns this handle
+            if let Some(path) = self.cache.iter()
+            .find_map(|(k, e)| (e.handle.id == h.id).then_some(k.clone())) {
+
+            let entry = self.cache.get_mut(&path).unwrap();
+            if entry.ref_count == 0 { return Ok(()); }          // already freed – shouldn’t happen
+            entry.ref_count -= 1;
+
+            if entry.ref_count == 0 {
+                CudaContext::free_device_memory(entry.handle.d_ptr)?;
+                self.cache.remove(&path);
+            }
+            }
+            Ok(())
+        }
     }
 }

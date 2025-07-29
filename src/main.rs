@@ -8,12 +8,14 @@ use std::error::Error;
 use std::ffi::c_void;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use std::path::Path;
+use cuda_driver_sys::cuGraphAddDependencies;
 
 use display::{Display, FpsCounter};
 use cuda_wrapper::{CudaContext, SceneBuffer, ImageRayAccum, dim3};
 use ecs::ecs::{World, update_rotation, Transform, Camera, Renderable, Rotating};
 use ecs::math_op::math_op::{Vec3, Quat};
-use crate::ecs::ecs_gpu_interface::ecs_gpu_interface::SdfType;
+use crate::ecs::ecs_gpu_interface::ecs_gpu_interface::{SdfType, TextureManager};
 
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -42,17 +44,22 @@ fn main() -> Result<(), Box<dyn Error>> {
         rotation: Quat::identity(), // need to be changed so z = -1
     });
 
+    let mut tex_mgr = TextureManager::new();
+
     let mut cube = world.spawn();
     world.insert_transform(cube, Transform {
         position: Vec3::new(0.0, 0.0, -5.0),
         rotation: Quat::identity(),
     });
-    world.insert_renderable(cube, Renderable::new(
-        SdfType::Cube,
-        [1.0, 1.0, 1.0], // params
-        "./src/textures/lines_texture.png",
-
-    ));
+    world.insert_renderable(
+        cube,
+        Renderable::new(
+            SdfType::Cube,
+            [1.0; 3],
+            Path::new("./src/textures/lines_texture.png"),
+            &mut tex_mgr,
+        )?,
+    );
     world.insert_rotating(cube, Rotating {
         speed_deg_per_sec: 30.0,
     });
@@ -62,11 +69,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         position: Vec3::new(0.0, 0.0, -5.0),
         rotation: Quat::identity(),
     });
-    world.insert_renderable(sphere, Renderable::new(
-        SdfType::Sphere,
-        [1.5, 0.0, 0.0], // params
-        "./src/textures/Wood_texture.png",
-    ));
+    world.insert_renderable(
+        sphere,
+        Renderable::new(
+            SdfType::Sphere,
+            [1.5, 0.0, 0.0],
+            Path::new("./src/textures/Wood_texture.png"),
+            &mut tex_mgr,
+        )?,
+    );
     world.insert_rotating(sphere, Rotating {
         speed_deg_per_sec: 30.0,
     });
@@ -90,7 +101,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     cuda_context.create_stream("stream1")?;
 
     // Allocate GPU memory
-    let mut scene_buf = SceneBuffer::new(3)?;   // 8 = nombre de sdf object initiale arbitraire
+    let mut scene_buf = SceneBuffer::new(2)?;   // 8 = nombre de sdf object initiale arbitraire
     let scene_cpu = world.render_scene(scene_buf.capacity);
     let mut first_image: bool = true;
     scene_buf.upload(&scene_cpu)?;
@@ -173,7 +184,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         &d_origins as *const _ as *const c_void,
         &d_directions as *const _ as *const c_void,
         &scene_buf.ptr() as *const _ as *const c_void,
-        &(scene_buf.capacity as i32) as *const _ as *const c_void,
+        &(scene_buf.max_index_used as i32) as *const _ as *const c_void,
         &d_ray_accum as *const _ as *const c_void,
     ];
 
@@ -225,19 +236,22 @@ fn main() -> Result<(), Box<dyn Error>> {
                         position: Vec3::new(0.0, 0.0, -5.0),
                         rotation: Quat::identity(),
                     });
-                    world.insert_renderable(cube, Renderable::new(
-                        SdfType::Cube,
-                        [1.0, 1.0, 1.0], // params
-                        "./src/textures/lines_texture.png",
-
-                    ));
+                    world.insert_renderable(
+                        cube,
+                        Renderable::new(
+                            SdfType::Cube,
+                            [1.0; 3],
+                            Path::new("./src/textures/lines_texture.png"),
+                            &mut tex_mgr,
+                        )?,
+                    );
                     world.insert_rotating(cube, Rotating {
                         speed_deg_per_sec: 30.0,
                     });
                 },
 
                 Event::MouseButtonDown { x, y, .. } => {
-                    world.despawn(cube);
+                    world.despawn(cube, &mut tex_mgr);
 
                     let mut mouse_down_lock = mouse_down.lock().unwrap();
                     *mouse_down_lock = true;

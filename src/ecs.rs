@@ -7,8 +7,8 @@ pub mod ecs {
     use cuda_driver_sys::{CUdeviceptr};
     use crate::cuda_wrapper::SceneBuffer;
     use crate::ecs::math_op::math_op::{Vec3, Quat};
-    use crate::ecs::ecs_gpu_interface::ecs_gpu_interface::{CameraObject, SdfType, SdfObject, sdf_type_translation, load_texture};
-    use std::{error::Error, collections::HashMap};
+    use crate::ecs::ecs_gpu_interface::ecs_gpu_interface::{CameraObject, SdfType, SdfObject, sdf_type_translation, TextureManager, TextureHandle};
+    use std::{error::Error, collections::HashMap, path::Path};
 
 
 
@@ -30,39 +30,28 @@ pub mod ecs {
         pub rotation: Quat,
     }
 
-    #[derive(Clone, Copy, Debug)]
+    #[derive(Clone, Debug)]
     pub struct Renderable {
-        pub sdf_type: SdfType,
-        pub params: [f32; 3],
-        pub d_texture: CUdeviceptr,
-        pub text_width: u32,
-        pub text_height: u32,
+        pub sdf_type:   SdfType,
+        pub params:     [f32; 3],
+        pub tex:        TextureHandle,
+    }
+
+    impl Renderable {
+        pub fn new(sdf_type: SdfType,
+                params:   [f32; 3],
+                path:     &Path,
+                tex_mgr:  &mut TextureManager) -> Result<Self, Box<dyn Error>> {
+            let tex = tex_mgr.load(path)?;
+            Ok(Self { sdf_type, params, tex })
+        }
     }
     impl Default for Renderable {
         fn default() -> Self {
             Self {
                 sdf_type: SdfType::Sphere,
                 params: [0.0; 3],
-                d_texture: 0,
-                text_width: 0,
-                text_height: 0,
-            }
-        }
-    }
-    impl Renderable {
-        pub fn new(sdf_type: SdfType, params: [f32;3], texture_path: &str) -> Renderable {
-            
-            let (d_texture, tex_w, tex_h) = match load_texture(texture_path) {
-                Ok(data) => data,
-                Err(_) => panic!("Texture not found or bad format"),
-            };
-            
-            Renderable {
-                sdf_type: sdf_type,
-                params: params,
-                d_texture: d_texture,
-                text_width: tex_w,
-                text_height: tex_h,
+                tex: TextureHandle::default(),
             }
         }
     }
@@ -193,6 +182,7 @@ pub mod ecs {
         spawned_entities: Vec<u32>,
         entities_to_remove_from_gpu: Vec<usize>,
         empty_spaces_indices_queu: Vec<usize>,
+        texture_of_entity: HashMap<u32, TextureHandle>,
 
 
         // component pools -----------------------------
@@ -213,6 +203,7 @@ pub mod ecs {
                 entities_to_remove_from_gpu: vec![],
                 spawned_entities: vec![],
                 empty_spaces_indices_queu: vec![],
+                texture_of_entity: HashMap::new(),
                 transforms: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
                 cameras: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
                 velocities: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
@@ -229,6 +220,7 @@ pub mod ecs {
             self.cameras.insert(e, c);
         }
         pub fn insert_renderable(&mut self, e: Entity, r: Renderable) {
+            self.texture_of_entity.insert(e.index, r.tex);
             self.renderables.insert(e, r);
         }
         pub fn insert_rotating(&mut self, e: Entity, r: Rotating) {
@@ -249,7 +241,7 @@ pub mod ecs {
             Entity { index, generation }
         }
 
-        pub fn despawn(&mut self, e: Entity) {
+        pub fn despawn(&mut self, e: Entity, tex_mgr: &mut TextureManager) {
             let idx = e.index as usize;
 
             if self.gens.get(idx).copied() != Some(e.generation) {
@@ -268,6 +260,10 @@ pub mod ecs {
 
             if let Some(index) = self.entity_to_scene_index.remove(&(idx as u32)) {
                 self.entities_to_remove_from_gpu.push(index)
+            }
+
+            if let Some(h) = self.texture_of_entity.remove(&e.index) {
+                let _ = tex_mgr.release(&h);
             }
         }
 
@@ -320,8 +316,8 @@ pub mod ecs {
                 let e = Entity { index: e_idx, generation: gen };
 
                 if let Some(tr) = self.transforms.get(e) {
-                    
-                    let (d_texture, tex_w, tex_h) = (render.d_texture, render.text_width, render.text_height);
+
+                    let texture = render.tex;
                     let sdf_type_device = sdf_type_translation(render.sdf_type);
                     let rot = tr.rotation;
 
@@ -332,9 +328,9 @@ pub mod ecs {
                         u: rot * Vec3::X,
                         v: rot * Vec3::Y,
                         w: rot * Vec3::Z,
-                        texture: d_texture,
-                        tex_width: tex_w,
-                        tex_height: tex_h,
+                        texture: texture.d_ptr,
+                        tex_width: texture.width,
+                        tex_height: texture.height,
                         active: 1,
                     };
 
@@ -351,6 +347,7 @@ pub mod ecs {
             self.spawned_entities = vec![];
             self.transforms.clear_dirty_flags();
             self.renderables.clear_dirty_flags();
+            self.entities_to_remove_from_gpu = vec![];
 
             output
         }
@@ -361,6 +358,7 @@ pub mod ecs {
             e: Entity,
         ) -> Result<(), Box<dyn Error>> {
             let render = self.renderables.get(e).ok_or("Missing Renderable")?;
+            let texture = render.tex;
             let tr = self.transforms.get(e).ok_or("Missing Transform")?;
         
             let sdf = SdfObject {
@@ -370,9 +368,9 @@ pub mod ecs {
                 u: tr.rotation * Vec3::X,
                 v: tr.rotation * Vec3::Y,
                 w: tr.rotation * Vec3::Z,
-                texture: render.d_texture,
-                tex_width: render.text_width,
-                tex_height: render.text_height,
+                texture: texture.d_ptr,
+                tex_width: texture.width,
+                tex_height: texture.height,
                 active: 1,
             };
         
@@ -390,7 +388,34 @@ pub mod ecs {
 
             let mut scene_updated = false;
 
+            // handles spawned entites
+            for idx in &self.spawned_entities {
+                let gen = self.gens[*idx as usize];
+                let e = Entity { index: *idx, generation: gen };
 
+                if self.renderables.contains(*idx as usize) {
+                    let index_gpu_buffer = if let Some(empty) = self.empty_spaces_indices_queu.first().copied() {
+                        self.empty_spaces_indices_queu.remove(0)
+                    } else {
+                        scene_buf.ensure_capacity(self.entity_to_scene_index.len() + 1);
+                        let new_scene = self.render_scene(scene_buf.capacity);
+                        scene_buf.upload(&new_scene);
+
+                        return true; // the scene is rerendered entirely so no need to go further
+                    };
+                    if (scene_buf.max_index_used < index_gpu_buffer) {
+                        scene_buf.max_index_used = index_gpu_buffer
+                    }
+                    self.entity_to_scene_index.insert(*idx, index_gpu_buffer);
+                    self.update_entity_on_gpu(scene_buf, e);
+
+                    scene_updated = true;
+                }
+            }
+
+            self.spawned_entities.clear();
+
+            // handles updates on transform or renderables
             let mut already_updated_entities:Vec<Entity> = vec![];
 
             for (transform, idx) in self.transforms.iter_dirty() {
@@ -417,38 +442,24 @@ pub mod ecs {
             self.transforms.clear_dirty_flags();
             self.renderables.clear_dirty_flags();
 
+            // Handles removed entities
             for idx in &self.entities_to_remove_from_gpu {
                 scene_buf.deactivate(*idx);
                 scene_updated = true;
                 self.empty_spaces_indices_queu.push(*idx);
                 self.empty_spaces_indices_queu.sort();
             }
+            let max_index_gpu: Option<usize> = self.entity_to_scene_index
+                .values()   // iterates over &usize
+                .copied()   // turn &usize → usize
+                .max();     // returns Option<usize>
 
-            self.entities_to_remove_from_gpu = vec![];
-
-            for idx in &self.spawned_entities {
-                let gen = self.gens[*idx as usize];
-                let e = Entity { index: *idx, generation: gen };
-
-                if self.renderables.contains(*idx as usize) {
-                    let index_gpu_buffer = if let Some(empty) = self.empty_spaces_indices_queu.first().copied() {
-                        self.empty_spaces_indices_queu.remove(0)
-                    } else {
-                        scene_buf.ensure_capacity(self.entity_to_scene_index.len() + 1);
-                        let new_scene = self.render_scene(scene_buf.capacity);
-                        scene_buf.upload(&new_scene);
-                        scene_updated = true;
-
-                        break; // ou return false, selon ton intention
-                    };
-                    self.entity_to_scene_index.insert(*idx, index_gpu_buffer);
-                    self.update_entity_on_gpu(scene_buf, e);
-
-                    scene_updated = true;
-                }
+            match max_index_gpu {
+                Some(m) => scene_buf.max_index_used = m,
+                None    => scene_buf.max_index_used = 0, //no more objects in the scene
             }
 
-            self.spawned_entities.clear();
+            self.entities_to_remove_from_gpu = vec![];
 
             return scene_updated
         }
