@@ -22,9 +22,7 @@
 - put sample per pixel in the camera
 - put light in ecs and make it customizable
 - add some basic physics simulations
-- add the spawn to the ecs update logic
 - faire des arbres de dependances/contraintes/interactions entre entities
-- change one texture_buffer per SdfObject to possibly shared texture buffer
 
 # main
 - make the code more sustainable over time
