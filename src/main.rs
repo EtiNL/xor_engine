@@ -136,12 +136,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // grid dim and block dim
     let grid_dim = dim3 {
-        x: ((width + 31) / 32) as u32,
-        y: ((height + 31) / 32) as u32,
+        x: ((width + 15) / 16) as u32,
+        y: ((height + 15) / 16) as u32,
         z: 1,
     };
     
-    let block_dim = dim3 { x: 32, y: 32, z: 1 };
+    let block_dim = dim3 { x: 16, y: 16, z: 1 };
 
     // Initialize Cuda random state
     let seed = 1530u32;
