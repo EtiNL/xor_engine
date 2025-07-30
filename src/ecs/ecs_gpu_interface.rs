@@ -3,7 +3,7 @@ pub mod ecs_gpu_interface {
     use std::{error::Error, collections::HashMap, path::PathBuf, path::Path};
     use image::ImageReader;
     use cuda_driver_sys::CUdeviceptr;
-    use crate::ecs::math_op::math_op::Vec3;
+    use crate::ecs::math_op::math_op::{Vec3, Mat3};
     use crate::cuda_wrapper::CudaContext;
 
     #[repr(C)]
@@ -78,6 +78,8 @@ pub mod ecs_gpu_interface {
         pub texture: CUdeviceptr,           // pointeur vers image device
         pub tex_width: u32,
         pub tex_height: u32,
+        pub lattice_basis: Mat3,
+        pub lattice_basis_inv: Mat3,
         pub active: u32,
     }
 
@@ -93,6 +95,8 @@ pub mod ecs_gpu_interface {
                 texture: 0,
                 tex_width: 0,
                 tex_height: 0,
+                lattice_basis: Mat3::Zero,
+                lattice_basis_inv: Mat3::Zero,
                 active: 0,
             }
         }

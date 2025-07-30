@@ -36,7 +36,6 @@ pub mod math_op {
         }
     }
 
-    // scène_composition.rs
     #[repr(C)]
     #[derive(Clone, Copy, Debug)]
     pub struct Quat {
@@ -98,5 +97,67 @@ pub mod math_op {
             a.z*b.x - a.x*b.z,
             a.x*b.y - a.y*b.x,
         )
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug)]
+    pub struct Mat3 {
+        pub a11: f32,
+        pub a12: f32,
+        pub a13: f32,
+        pub a21: f32,
+        pub a22: f32,
+        pub a23: f32,
+        pub a31: f32,
+        pub a32: f32,
+        pub a33: f32,
+    }
+    impl Mat3 {
+        pub const Id: Self = Self { 
+            a11: 1.0,
+            a12: 0.0,
+            a13: 0.0,
+            a21: 0.0,
+            a22: 1.0,
+            a23: 0.0,
+            a31: 0.0,
+            a32: 0.0,
+            a33: 1.0, };
+        pub const Zero: Self = Self { 
+            a11: 0.0,
+            a12: 0.0,
+            a13: 0.0,
+            a21: 0.0,
+            a22: 0.0,
+            a23: 0.0,
+            a31: 0.0,
+            a32: 0.0,
+            a33: 0.0, };
+
+        pub const fn det(&self) -> f32 {
+            self.a11 * (self.a22*self.a33 - self.a23*self.a32) 
+            - self.a12 * (self.a21*self.a33 - self.a31*self.a23)
+            + self.a13 * (self.a21*self.a32 - self.a31*self.a22)
+        }
+
+        pub const fn inv(&self) -> Mat3 {
+            let det: f32 = self.det();
+            Self { a11: (self.a22*self.a33 - self.a23*self.a32)/det, 
+                a12: (self.a13*self.a32 - self.a12*self.a33)/det,
+                a13: (self.a12*self.a23 - self.a22*self.a13)/det, 
+                a21: (self.a31*self.a23 - self.a21*self.a33)/det,
+                a22: (self.a11*self.a33 * self.a31*self.a13)/det,
+                a23: (self.a21*self.a13 - self.a12*self.a23)/det,
+                a31: (self.a21*self.a32 - self.a31*self.a22)/det,
+                a32: (self.a12*self.a31 - self.a11*self.a32)/det,
+                a33: (self.a11*self.a22 - self.a12*self.a21)/det }
+        } 
+
+
+    }
+    impl Default for Mat3 {
+        fn default() -> Self {
+            Mat3::Zero
+        }
     }
 }

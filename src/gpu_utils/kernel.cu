@@ -12,7 +12,15 @@ struct Vec2 {
     __device__ Vec2 operator/(float s) const { return Vec2(x / s, y / s); }
 
 };
+struct Mat3 {
+    float a11, a12, a13, a21, a22, a23, a31, a32, a33;
 
+    __device__ Mat3() : a11(0), a12(0), a13(0), a21(0), a22(0), a23(0), a31(0), a32(0), a33(0) {}
+    __device__ Mat3(float a11, float a12, float a13, float a21, float a22, float a23, float a31, float a32, float a33) : a11(a11), a12(a12), a13(a13), a21(a21), a22(a22), a23(a23), a31(a31), a32(a32), a33(a33) {}
+
+    __device__ bool is_null() const { return a11 == 0 && a12 == 0 && a13 == 0 && a21 == 0 && a22 == 0 && a23 == 0 && a31 == 0 && a32 == 0 && a33 == 0; }
+
+};
 
 // Vec3 struct compatible with CUDA
 struct Vec3 {
@@ -27,12 +35,17 @@ struct Vec3 {
     __device__ Vec3 operator*(float s) const { return Vec3(x * s, y * s, z * s); }
     __device__ Vec3 operator/(float s) const { return Vec3(x / s, y / s, z / s); }
     __device__ Vec3 operator*(const Vec3& b) const { return Vec3(x * b.x, y * b.y, z * b.z); }
+    __device__ Vec3 operator*(const Mat3& a) const { return Vec3(x * a.a11 + y * a.a12+ z * a.a13, x * a.a21 + y * a.a22+ z * a.a23, x * a.a31 + y * a.a32+ z * a.a33); }
 
     __device__ float length() const { return sqrtf(x * x + y * y + z * z); }
     __device__ Vec3 normalize() const {
         float len = length();
         return (len > 0) ? (*this) / len : Vec3(0, 0, 0);
     }
+    __device__ Vec3 floor() const {
+        return Vec3(floorf(x), floorf(y), floorf(z));
+    }
+
 
     __device__ static Vec3 cross(const Vec3& a, const Vec3& b) {
         return Vec3(
@@ -86,6 +99,8 @@ struct SdfObject {
     unsigned char* texture; // pointer to device image data
     int tex_width;          // texture width
     int tex_height;         // texture height
+    Mat3 lattice_basis;     // basis of the lattice
+    Mat3 lattice_basis_inv;
     int active;             // if this sdf object is still active in the world or if it has been despawned
 };
 
@@ -357,10 +372,12 @@ void raymarch(int width, int height, float* origins, float* directions, SdfObjec
     int steps = 0;
     int j_min = -1;
     float   min_dist = 1e20f;
+    float d = min_dist;
 
     while (steps < max_steps) {
         min_dist = 1e20f;
         j_min    = -1;
+        
 
         for (int j = 0; j < num_objects; ++j) {
 
@@ -368,7 +385,19 @@ void raymarch(int width, int height, float* origins, float* directions, SdfObjec
             
             if (sdf_obj.active == 0) {continue;}
 
-            float d = evaluate_sdf(sdf_obj, p);
+            if (sdf_obj.lattice_basis.is_null()) {
+                d = evaluate_sdf(sdf_obj, p);
+            } else {
+                Mat3 A = sdf_obj.lattice_basis;
+                Mat3 A_inv = sdf_obj.lattice_basis_inv;
+
+                Vec3 p_loc = p*A;
+                p_loc = p_loc - p_loc.floor() - Vec3(0.5);
+                p_loc = p_loc * A_inv;
+
+                d = evaluate_sdf(sdf_obj, p_loc);
+            }
+
             if (d < min_dist) {
                 min_dist = d;
                 j_min = j;

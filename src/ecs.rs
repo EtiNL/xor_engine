@@ -6,7 +6,7 @@ pub mod ecs {
 
     use cuda_driver_sys::{CUdeviceptr};
     use crate::cuda_wrapper::SceneBuffer;
-    use crate::ecs::math_op::math_op::{Vec3, Quat};
+    use crate::ecs::math_op::math_op::{Vec3, Quat, Mat3};
     use crate::ecs::ecs_gpu_interface::ecs_gpu_interface::{CameraObject, SdfType, SdfObject, sdf_type_translation, TextureManager, TextureHandle};
     use std::{error::Error, collections::HashMap, path::Path};
 
@@ -52,6 +52,26 @@ pub mod ecs {
                 sdf_type: SdfType::Sphere,
                 params: [0.0; 3],
                 tex: TextureHandle::default(),
+            }
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct SpaceFolding {
+        pub lattice_basis: Mat3,
+        pub lattice_basis_inv: Mat3, 
+    }
+    impl SpaceFolding {
+        pub fn new(lattice_basis: Mat3) -> Self {
+            let lattice_basis_inv: Mat3 = lattice_basis.inv();
+            Self { lattice_basis, lattice_basis_inv }
+        }
+    }
+    impl Default for SpaceFolding {
+        fn default() -> Self {
+            Self {
+                lattice_basis: Mat3::Zero,
+                lattice_basis_inv: Mat3::Zero,
             }
         }
     }
@@ -191,6 +211,7 @@ pub mod ecs {
         cameras: SparseSet<Camera>,
         colliders:  SparseSet<Collider>,
         renderables: SparseSet<Renderable>,
+        space_foldings: SparseSet<SpaceFolding>,
         rotatings: SparseSet<Rotating>,
     }
 
@@ -209,6 +230,7 @@ pub mod ecs {
                 velocities: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
                 colliders:  SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
                 renderables: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
+                space_foldings: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
                 rotatings:  SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
             }
         }
@@ -222,6 +244,9 @@ pub mod ecs {
         pub fn insert_renderable(&mut self, e: Entity, r: Renderable) {
             self.texture_of_entity.insert(e.index, r.tex);
             self.renderables.insert(e, r);
+        }
+        pub fn insert_space_folding(&mut self, e: Entity, s: SpaceFolding) {
+            self.space_foldings.insert(e, s);
         }
         pub fn insert_rotating(&mut self, e: Entity, r: Rotating) {
             self.rotatings.insert(e, r);
@@ -256,6 +281,7 @@ pub mod ecs {
             self.colliders.remove(e);
             self.renderables.remove(e);
             self.cameras.remove(e);
+            self.space_foldings.remove(e);
             self.rotatings.remove(e);
 
             if let Some(index) = self.entity_to_scene_index.remove(&(idx as u32)) {
@@ -320,6 +346,9 @@ pub mod ecs {
                     let texture = render.tex;
                     let sdf_type_device = sdf_type_translation(render.sdf_type);
                     let rot = tr.rotation;
+                    let default_sf = SpaceFolding::default();
+                    let sf = self.space_foldings.get(e).unwrap_or(&default_sf);
+
 
                     let sdf = SdfObject {
                         sdf_type: sdf_type_device,
@@ -331,11 +360,13 @@ pub mod ecs {
                         texture: texture.d_ptr,
                         tex_width: texture.width,
                         tex_height: texture.height,
+                        lattice_basis: sf.lattice_basis,
+                        lattice_basis_inv: sf.lattice_basis_inv,
                         active: 1,
                     };
+                    output.push(sdf);
 
                     self.entity_to_scene_index.insert(e_idx, output.len());
-                    output.push(sdf);
                 }
             }
 
@@ -358,11 +389,15 @@ pub mod ecs {
             e: Entity,
         ) -> Result<(), Box<dyn Error>> {
             let render = self.renderables.get(e).ok_or("Missing Renderable")?;
+            let sdf_type_device = sdf_type_translation(render.sdf_type);
             let texture = render.tex;
             let tr = self.transforms.get(e).ok_or("Missing Transform")?;
-        
+            let default_sf = SpaceFolding::default();
+            let sf = self.space_foldings.get(e).unwrap_or(&default_sf);
+
+            
             let sdf = SdfObject {
-                sdf_type: sdf_type_translation(render.sdf_type),
+                sdf_type: sdf_type_device,
                 params: render.params,
                 center: tr.position,
                 u: tr.rotation * Vec3::X,
@@ -371,9 +406,11 @@ pub mod ecs {
                 texture: texture.d_ptr,
                 tex_width: texture.width,
                 tex_height: texture.height,
+                lattice_basis: sf.lattice_basis,
+                lattice_basis_inv: sf.lattice_basis_inv,
                 active: 1,
             };
-        
+
             let index = self.entity_to_scene_index.get(&e.index).ok_or("Entity not in scene")?;
 
             unsafe { scene_buf.update_sdfobject_in_gpu_scene(*index, &sdf) }
