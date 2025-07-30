@@ -374,6 +374,10 @@ void raymarch(int width, int height, float* origins, float* directions, SdfObjec
     float   min_dist = 1e20f;
     float d = min_dist;
 
+    Vec3 p_loc_min = Vec3(0); // used for periodic lattice folding
+    Vec3 p_loc = Vec3(0);
+    bool periodic_lattice_folding = false;
+
     while (steps < max_steps) {
         min_dist = 1e20f;
         j_min    = -1;
@@ -385,13 +389,15 @@ void raymarch(int width, int height, float* origins, float* directions, SdfObjec
             
             if (sdf_obj.active == 0) {continue;}
 
-            if (sdf_obj.lattice_basis.is_null()) {
+            periodic_lattice_folding = sdf_obj.lattice_basis.is_null();
+            if (periodic_lattice_folding) {
                 d = evaluate_sdf(sdf_obj, p);
             } else {
+                if (i==1) {printf(" no folding \n");}
                 Mat3 A = sdf_obj.lattice_basis;
                 Mat3 A_inv = sdf_obj.lattice_basis_inv;
 
-                Vec3 p_loc = p*A;
+                p_loc = p*A;
                 p_loc = p_loc - p_loc.floor() - Vec3(0.5);
                 p_loc = p_loc * A_inv;
 
@@ -399,6 +405,7 @@ void raymarch(int width, int height, float* origins, float* directions, SdfObjec
             }
 
             if (d < min_dist) {
+                p_loc_min = p_loc;
                 min_dist = d;
                 j_min = j;
             }
@@ -424,7 +431,12 @@ void raymarch(int width, int height, float* origins, float* directions, SdfObjec
 
         color = obj_mapping(hit_object, p);
 
-        Vec3 normal = evaluate_grad_sdf(hit_object, p)*-1; // ou gradient numérique si type générique
+        Vec3 normal = Vec3(0);
+        if (periodic_lattice_folding) {
+                normal = evaluate_grad_sdf(hit_object, p)*-1; // ou gradient numérique si type générique
+            } else {
+                normal = evaluate_grad_sdf(hit_object, p_loc_min)*-1; // ou gradient numérique si type générique
+            }
         Vec3 light_dir = Vec3(0.5, 1.0, -0.6).normalize();
         float shade = fmaxf(0.0f, Vec3::dot(normal, light_dir));
         color = color * shade;
