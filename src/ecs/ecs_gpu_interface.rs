@@ -66,7 +66,7 @@ pub mod ecs_gpu_interface {
     }
 
 
-    #[repr(C)]
+    #[repr(C, align(8))]
     #[derive(Clone, Copy, Debug)]
     pub struct SdfObject {
         pub sdf_type: u32,

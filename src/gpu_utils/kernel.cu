@@ -92,7 +92,7 @@ enum SdfType {
     // Extend as needed
 };
 
-struct SdfObject {
+struct __align__(8) SdfObject {
     int sdf_type;           // 0 = sphere, ...
     float params[3];        // general-purpose parameters
     Vec3 center, u, v, w;   // center and local basis
