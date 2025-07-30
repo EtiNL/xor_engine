@@ -146,7 +146,7 @@ pub mod math_op {
                 a12: (self.a13*self.a32 - self.a12*self.a33)/det,
                 a13: (self.a12*self.a23 - self.a22*self.a13)/det, 
                 a21: (self.a31*self.a23 - self.a21*self.a33)/det,
-                a22: (self.a11*self.a33 * self.a31*self.a13)/det,
+                a22: (self.a11*self.a33 - self.a31*self.a13)/det,
                 a23: (self.a21*self.a13 - self.a12*self.a23)/det,
                 a31: (self.a21*self.a32 - self.a31*self.a22)/det,
                 a32: (self.a12*self.a31 - self.a11*self.a32)/det,

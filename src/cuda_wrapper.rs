@@ -112,10 +112,17 @@ impl CudaContext {
         Ok(())
     }
 
-    pub fn synchronize(&self, stream_name: &str) -> Result<(), Box<dyn Error>> {
+    pub fn synchronize_stream(&self, stream_name: &str) -> Result<(), Box<dyn Error>> {
         let stream = self.get_stream(stream_name)?;
         unsafe {
             check_cuda_result(cuStreamSynchronize(stream), "cuStreamSynchronize")?;
+        }
+        Ok(())
+    }
+
+    pub fn synchronize() -> Result<(), Box<dyn Error>> {
+        unsafe {
+            check_cuda_result(cuCtxSynchronize(), "cuCtxSynchronize")?;
         }
         Ok(())
     }
@@ -346,9 +353,10 @@ impl SceneBuffer {
         objects: &[SdfObject],
     ) -> Result<(), Box<dyn Error>> {
         
-        self.ensure_capacity(objects.len());
-        if self.max_index_used < objects.len(){
-            self.max_index_used = objects.len()
+        if objects.is_empty() {
+            self.max_index_used = 0;
+        } else if self.max_index_used < objects.len() - 1 {
+            self.max_index_used = objects.len() - 1;
         }
         CudaContext::copy_host_to_device(self.d_ptr, objects)
     }

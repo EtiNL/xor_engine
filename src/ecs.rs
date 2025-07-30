@@ -366,7 +366,7 @@ pub mod ecs {
                     };
                     output.push(sdf);
 
-                    self.entity_to_scene_index.insert(e_idx, output.len());
+                    self.entity_to_scene_index.insert(e_idx, output.len()-1);
                 }
             }
 
@@ -440,9 +440,9 @@ pub mod ecs {
 
                         return true; // the scene is rerendered entirely so no need to go further
                     };
-                    if (scene_buf.max_index_used < index_gpu_buffer) {
-                        scene_buf.max_index_used = index_gpu_buffer
-                    }
+                    
+                    scene_buf.max_index_used = scene_buf.max_index_used.max(index_gpu_buffer);
+
                     self.entity_to_scene_index.insert(*idx, index_gpu_buffer);
                     self.update_entity_on_gpu(scene_buf, e);
 

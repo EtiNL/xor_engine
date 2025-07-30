@@ -162,6 +162,7 @@ pub mod ecs_gpu_interface {
             entry.ref_count -= 1;
 
             if entry.ref_count == 0 {
+                CudaContext::synchronize();
                 CudaContext::free_device_memory(entry.handle.d_ptr)?;
                 self.cache.remove(&path);
             }

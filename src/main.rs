@@ -13,8 +13,8 @@ use cuda_driver_sys::cuGraphAddDependencies;
 
 use display::{Display, FpsCounter};
 use cuda_wrapper::{CudaContext, SceneBuffer, ImageRayAccum, dim3};
-use ecs::ecs::{World, update_rotation, Transform, Camera, Renderable, Rotating};
-use ecs::math_op::math_op::{Vec3, Quat};
+use ecs::ecs::{World, update_rotation, Transform, Camera, Renderable, Rotating, SpaceFolding};
+use ecs::math_op::math_op::{Vec3, Quat, Mat3};
 use crate::ecs::ecs_gpu_interface::ecs_gpu_interface::{SdfType, TextureManager};
 
 
@@ -48,7 +48,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut cube = world.spawn();
     world.insert_transform(cube, Transform {
-        position: Vec3::new(0.0, 0.0, -5.0),
+        position: Vec3::new(0.0, 0.0, -10.0),
         rotation: Quat::identity(),
     });
     world.insert_renderable(
@@ -66,7 +66,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let sphere = world.spawn();
     world.insert_transform(sphere, Transform {
-        position: Vec3::new(0.0, 0.0, -5.0),
+        position: Vec3::new(0.0, 0.0, -10.0),
         rotation: Quat::identity(),
     });
     world.insert_renderable(
@@ -78,6 +78,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             &mut tex_mgr,
         )?,
     );
+    // world.insert_space_folding(sphere, 
+    //     SpaceFolding::new(Mat3::Id));
+
     world.insert_rotating(sphere, Rotating {
         speed_deg_per_sec: 30.0,
     });
@@ -184,7 +187,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         &d_origins as *const _ as *const c_void,
         &d_directions as *const _ as *const c_void,
         &scene_buf.ptr() as *const _ as *const c_void,
-        &(scene_buf.max_index_used as i32) as *const _ as *const c_void,
+        &(scene_buf.max_index_used as i32 +1) as *const _ as *const c_void,
         &d_ray_accum as *const _ as *const c_void,
     ];
 
@@ -290,7 +293,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 &d_origins              as *const _ as *const c_void,
                 &d_directions           as *const _ as *const c_void,
                 &new_scene_ptr          as *const _ as *const c_void,
-                &(scene_buf.capacity as i32) as *const _ as *const c_void,
+                &(scene_buf.max_index_used as i32 +1) as *const _ as *const c_void,
                 &d_ray_accum            as *const _ as *const c_void,
             ];
             cuda_context.exec_kernel_node_set_params(
@@ -301,14 +304,14 @@ fn main() -> Result<(), Box<dyn Error>> {
 
             // Launch the graph
             cuda_context.launch_graph(graph_exec)?;
-            cuda_context.synchronize("stream1");
+            CudaContext::synchronize();
 
             
             if cam.aperture > 0.0 {
                 for _i in 1..sample_per_pixel {
                     // Launch the graph
                     cuda_context.launch_graph(graph_exec)?;
-                    cuda_context.synchronize("stream1");
+                    CudaContext::synchronize();
                 }
             }
             // Copy the result from GPU to CPU memory

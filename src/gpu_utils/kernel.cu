@@ -367,7 +367,7 @@ void raymarch(int width, int height, float* origins, float* directions, SdfObjec
     Vec3 p = origin;
     float total_dist = 0.0f;
     const float eps = 0.001f;
-    const float max_dist = 6.0f;
+    const float max_dist = 1000.0f;
     const int max_steps = 100;
     int steps = 0;
     int j_min = -1;
@@ -376,7 +376,7 @@ void raymarch(int width, int height, float* origins, float* directions, SdfObjec
 
     Vec3 p_loc_min = Vec3(0); // used for periodic lattice folding
     Vec3 p_loc = Vec3(0);
-    bool periodic_lattice_folding = false;
+    bool no_periodic_lattice_folding = false;
 
     while (steps < max_steps) {
         min_dist = 1e20f;
@@ -389,11 +389,10 @@ void raymarch(int width, int height, float* origins, float* directions, SdfObjec
             
             if (sdf_obj.active == 0) {continue;}
 
-            periodic_lattice_folding = sdf_obj.lattice_basis.is_null();
-            if (periodic_lattice_folding) {
+            no_periodic_lattice_folding = sdf_obj.lattice_basis.is_null();
+            if (no_periodic_lattice_folding) {
                 d = evaluate_sdf(sdf_obj, p);
             } else {
-                if (i==1) {printf(" no folding \n");}
                 Mat3 A = sdf_obj.lattice_basis;
                 Mat3 A_inv = sdf_obj.lattice_basis_inv;
 
@@ -432,7 +431,7 @@ void raymarch(int width, int height, float* origins, float* directions, SdfObjec
         color = obj_mapping(hit_object, p);
 
         Vec3 normal = Vec3(0);
-        if (periodic_lattice_folding) {
+        if (no_periodic_lattice_folding) {
                 normal = evaluate_grad_sdf(hit_object, p)*-1; // ou gradient numérique si type générique
             } else {
                 normal = evaluate_grad_sdf(hit_object, p_loc_min)*-1; // ou gradient numérique si type générique
