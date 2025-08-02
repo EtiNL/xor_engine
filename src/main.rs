@@ -78,8 +78,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             &mut tex_mgr,
         )?,
     );
-    // world.insert_space_folding(sphere, 
-    //     SpaceFolding::new(Mat3::Id));
+    world.insert_space_folding(sphere, 
+        SpaceFolding::new(Mat3::Id*10.0));
 
     world.insert_rotating(sphere, Rotating {
         speed_deg_per_sec: 30.0,

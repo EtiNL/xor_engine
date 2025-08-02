@@ -155,6 +155,22 @@ pub mod math_op {
 
 
     }
+
+    impl Mul<f32> for Mat3 {
+        type Output = Mat3;
+        fn mul(self, k: f32) -> Mat3 {
+            Mat3 { a11: self.a11 * k, 
+                a12: self.a12 * k,
+                a13: self.a13 * k, 
+                a21: self.a21 * k,
+                a22: self.a22 * k,
+                a23: self.a23 * k,
+                a31: self.a31 * k,
+                a32: self.a32 * k,
+                a33: self.a33 * k }
+        }
+    }
+
     impl Default for Mat3 {
         fn default() -> Self {
             Mat3::Zero

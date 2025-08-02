@@ -1,5 +1,7 @@
+#include <math.h>
 #include <curand_kernel.h>
 #include <stdio.h>
+
 struct Vec2 {
     float x, y;
 
@@ -282,20 +284,13 @@ __device__ Vec2 spherical_mapping(Vec3 point, Vec3 center, Vec3 u, Vec3 v, Vec3 
 }
 
 __device__ Vec3 sample_texture(const SdfObject& obj, Vec2 uv) {
-    // Clamp u,v to [0,1]
-    float u = fminf(fmaxf(uv.x, 0.0f), 1.0f);
-    float v = fminf(fmaxf(uv.y, 0.0f), 1.0f);
-
-    int tex_x = static_cast<int>(uv.x * (obj.tex_width - 1));
-    int tex_y = static_cast<int>(uv.y * (obj.tex_height - 1));
-
-    int tex_idx = (tex_y * obj.tex_width + tex_x) * 3;
-
-    unsigned char r = obj.texture[tex_idx + 0];
-    unsigned char g = obj.texture[tex_idx + 1];
-    unsigned char b = obj.texture[tex_idx + 2];
-
-    return Vec3(r / 255.0f, g / 255.0f, b / 255.0f); // normalized RGB
+    float u = fminf(fmaxf(uv.x,0.f),1.f);
+    float v = fminf(fmaxf(uv.y,0.f),1.f);
+    int   tx = int(u * (obj.tex_width  -1));
+    int   ty = int(v * (obj.tex_height -1));
+    int   idx= (ty*obj.tex_width + tx)*3;
+    unsigned char r=obj.texture[idx],g=obj.texture[idx+1],b=obj.texture[idx+2];
+    return Vec3(r/255.f,g/255.f,b/255.f);
 }
 
 __device__ Vec3 triplanar_sample(const SdfObject& obj, Vec3 p, Vec3 normal) {
@@ -352,7 +347,6 @@ void raymarch(int width, int height, float* origins, float* directions, SdfObjec
 
     if (x >= width || y >= height) return;
 
-    // Load ray origin and direction
     Vec3 origin = Vec3(
         origins[i * 3 + 0],
         origins[i * 3 + 1],
@@ -370,78 +364,79 @@ void raymarch(int width, int height, float* origins, float* directions, SdfObjec
     const float max_dist = 1000.0f;
     const int max_steps = 100;
     int steps = 0;
-    int j_min = -1;
-    float   min_dist = 1e20f;
-    float d = min_dist;
 
-    Vec3 p_loc_min = Vec3(0); // used for periodic lattice folding
-    Vec3 p_loc = Vec3(0);
-    bool no_periodic_lattice_folding = false;
+    float min_dist = 1e20f;
+    SdfObject sdf_min;
 
     while (steps < max_steps) {
         min_dist = 1e20f;
-        j_min    = -1;
-        
+
 
         for (int j = 0; j < num_objects; ++j) {
-
             SdfObject sdf_obj = scene[j];
-            
-            if (sdf_obj.active == 0) {continue;}
+            if (sdf_obj.active == 0) continue;
 
-            no_periodic_lattice_folding = sdf_obj.lattice_basis.is_null();
-            if (no_periodic_lattice_folding) {
-                d = evaluate_sdf(sdf_obj, p);
-            } else {
-                Mat3 A = sdf_obj.lattice_basis;
-                Mat3 A_inv = sdf_obj.lattice_basis_inv;
+            SdfObject eval_sdf = sdf_obj;
 
-                p_loc = p*A;
-                p_loc = p_loc - p_loc.floor() - Vec3(0.5);
-                p_loc = p_loc * A_inv;
+            bool folded = !sdf_obj.lattice_basis.is_null();
 
-                d = evaluate_sdf(sdf_obj, p_loc);
+            if (folded) {
+                Vec3 diff = p - sdf_obj.center;
+                // coordonnées dans la grille : (p - center) * invL  (row-vector semantics)
+                Vec3 lattice_coords = diff * sdf_obj.lattice_basis_inv;
+                // arrondir pour trouver quel multiple entier de la grille est le plus proche
+                Vec3 kf = Vec3(roundf(lattice_coords.x), roundf(lattice_coords.y), roundf(lattice_coords.z));
+                // reconstruire le centre le plus proche : center + (kf * L)
+                Vec3 nearest_center_offset = kf * sdf_obj.lattice_basis;
+                eval_sdf.center = sdf_obj.center + nearest_center_offset;
             }
 
-            if (d < min_dist) {
-                p_loc_min = p_loc;
-                min_dist = d;
-                j_min = j;
+            float d_eval = evaluate_sdf(eval_sdf, p);
+
+            if (d_eval < 0) {
+                // when the camera is inside a lattice folded onject we get out via this simple formula
+                float center_dist = (eval_sdf.center - p).length();
+                float lattice_x = Vec3(eval_sdf.lattice_basis.a11, eval_sdf.lattice_basis.a21, eval_sdf.lattice_basis.a31).length();
+                float lattice_y = Vec3(eval_sdf.lattice_basis.a12, eval_sdf.lattice_basis.a22, eval_sdf.lattice_basis.a32).length();
+                float lattice_z = Vec3(eval_sdf.lattice_basis.a13, eval_sdf.lattice_basis.a23, eval_sdf.lattice_basis.a33).length();
+                d_eval = fminf(fminf(lattice_x, lattice_y), lattice_z)/2 - center_dist;
+            }
+
+            if (d_eval < min_dist) {
+                min_dist = d_eval;
+                sdf_min = eval_sdf;
             }
         }
 
-        if (min_dist < eps || total_dist > max_dist)
+        if ((min_dist < eps) || total_dist > max_dist) {
             break;
+        }
+
 
         p = p + dir * min_dist;
         total_dist += min_dist;
         steps++;
     }
 
+    bool hit = (min_dist < eps);
+
     Vec3 color;
-    SdfObject hit_object;
-    
-    bool hit = (min_dist < eps && j_min >= 0);
-
-    if (!hit){
-        color = Vec3(0.0, 0.0, 0.0);
+    if (!hit) {
+        color = Vec3(0.0f, 0.0f, 0.0f);
     } else {
-        hit_object = scene[j_min];
+        Vec3 normal = Vec3(0.0f, 0.0f, 0.0f);
+        Vec3 light_dir = Vec3(0.5f, 1.0f, -0.6f).normalize();
+        color = obj_mapping(sdf_min, p);
+        normal = (evaluate_grad_sdf(sdf_min, p) * -1.0f).normalize();
+        
 
-        color = obj_mapping(hit_object, p);
-
-        Vec3 normal = Vec3(0);
-        if (no_periodic_lattice_folding) {
-                normal = evaluate_grad_sdf(hit_object, p)*-1; // ou gradient numérique si type générique
-            } else {
-                normal = evaluate_grad_sdf(hit_object, p_loc_min)*-1; // ou gradient numérique si type générique
-            }
-        Vec3 light_dir = Vec3(0.5, 1.0, -0.6).normalize();
         float shade = fmaxf(0.0f, Vec3::dot(normal, light_dir));
         color = color * shade;
     }
+
     accumulate(image_acc, color, i);
 }
+
 
 // Test kernels
 extern "C" __global__ void print_str(const char* message) {
