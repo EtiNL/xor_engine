@@ -361,7 +361,7 @@ void raymarch(int width, int height, float* origins, float* directions, SdfObjec
     Vec3 p = origin;
     float total_dist = 0.0f;
     const float eps = 0.001f;
-    const float max_dist = 1000.0f;
+    const float max_dist = 200.0f;
     const int max_steps = 100;
     int steps = 0;
 
