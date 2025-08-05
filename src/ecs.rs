@@ -5,17 +5,28 @@ pub mod math_op;
 pub mod ecs {
 
     use cuda_driver_sys::{CUdeviceptr};
-    use crate::cuda_wrapper::SceneBuffer;
+    
+    
+    use std::{error::Error, path::Path};
+    use std::collections::HashSet;
+    use memoffset::offset_of;
+
+    use crate::ecs::ecs_gpu_interface::ecs_gpu_interface::{
+        CameraObject, SdfType, sdf_type_translation,
+        GpuIndexMap, TextureManager, TextureHandle,
+        GpuSdfObjectBase, GpuMaterial, GpuLight, GpuSpaceFolding,
+        INVALID_MATERIAL, INVALID_LIGHT, INVALID_FOLDING,
+    };
+    use crate::cuda_wrapper::GpuBuffer;
     use crate::ecs::math_op::math_op::{Vec3, Quat, Mat3};
-    use crate::ecs::ecs_gpu_interface::ecs_gpu_interface::{CameraObject, SdfType, SdfObject, sdf_type_translation, TextureManager, TextureHandle};
-    use std::{error::Error, collections::HashMap, path::Path};
+
 
 
 
     // Entity
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub struct Entity {
-        index: u32,
+        pub index: u32,
         generation: u32,          // helps catch use-after-delete
     }
 
@@ -24,36 +35,31 @@ pub mod ecs {
     }
 
     // Components
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct SdfBase {
+        pub sdf_type: SdfType,
+        pub params: [f32; 3],
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct MaterialComponent {
+        pub color: [f32; 3],
+        pub texture: Option<TextureHandle>,
+        pub use_texture: bool,
+        // future: roughness, emission, metallic, etc.
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct LightComponent {
+        pub position: Vec3,
+        pub color: Vec3,
+        pub intensity: f32,
+    }
     #[derive(Clone, Copy, Debug, Default)]
     pub struct Transform {
         pub position: Vec3,
         pub rotation: Quat,
-    }
-
-    #[derive(Clone, Debug)]
-    pub struct Renderable {
-        pub sdf_type:   SdfType,
-        pub params:     [f32; 3],
-        pub tex:        TextureHandle,
-    }
-
-    impl Renderable {
-        pub fn new(sdf_type: SdfType,
-                params:   [f32; 3],
-                path:     &Path,
-                tex_mgr:  &mut TextureManager) -> Result<Self, Box<dyn Error>> {
-            let tex = tex_mgr.load(path)?;
-            Ok(Self { sdf_type, params, tex })
-        }
-    }
-    impl Default for Renderable {
-        fn default() -> Self {
-            Self {
-                sdf_type: SdfType::Sphere,
-                params: [0.0; 3],
-                tex: TextureHandle::default(),
-            }
-        }
     }
 
     #[derive(Clone, Debug)]
@@ -67,14 +73,6 @@ pub mod ecs {
             Self { lattice_basis, lattice_basis_inv }
         }
     }
-    impl Default for SpaceFolding {
-        fn default() -> Self {
-            Self {
-                lattice_basis: Mat3::Zero,
-                lattice_basis_inv: Mat3::Zero,
-            }
-        }
-    }
 
     #[derive(Clone, Debug)]
     pub struct Camera {
@@ -85,7 +83,6 @@ pub mod ecs {
         pub aperture: f32,
         pub focus_distance: f32
     }
-
 
     #[derive(Clone, Copy, Debug, Default)]
     pub struct Rotating {
@@ -136,19 +133,28 @@ pub mod ecs {
 
         pub fn remove(&mut self, e: Entity) {
             let idx = e.index as usize;
-            let slot = match self.sparse.get(idx) { Some(&s) if s != u32::MAX => s, _ => return };
+            let slot = match self.sparse.get(idx) {
+                Some(&s) if s != u32::MAX => s,
+                _ => return,
+            };
             let last = self.dense_entities.len() as u32 - 1;
-
-            // swap-remove in dense arrays
+        
+            // swap-remove from the entity list
             self.dense_entities.swap(slot as usize, last as usize);
             self.dense_data.swap(slot as usize, last as usize);
-
-            // update sparse back-pointer of the moved entity
+            // also swap-remove the dirty flag for that slot
+            self.dirty_flags.swap(slot as usize, last as usize);
+        
+            // fix up the sparse back-pointer of the entity we just moved
             let moved_entity_idx = self.dense_entities[slot as usize] as usize;
             self.sparse[moved_entity_idx] = slot;
-
+        
+            // pop off the now-unused last slot from all three arrays
             self.dense_entities.pop();
             self.dense_data.pop();
+            self.dirty_flags.pop();
+        
+            // mark this index as “absent”
             self.sparse[idx] = u32::MAX;
         }
 
@@ -196,60 +202,87 @@ pub mod ecs {
 
     // World
     pub struct World {
-        gens:  Vec<u32>,          // generation per slot
-        free:  Vec<u32>,          // holes we can reuse
-        entity_to_scene_index: HashMap<u32, usize>,
+        // entity management
+        gens: Vec<u32>,
+        free: Vec<u32>,
         spawned_entities: Vec<u32>,
-        entities_to_remove_from_gpu: Vec<usize>,
-        empty_spaces_indices_queu: Vec<usize>,
-        texture_of_entity: HashMap<u32, TextureHandle>,
+        entities_to_remove_from_gpu: Vec<u32>,
 
-
-        // component pools -----------------------------
-        transforms: SparseSet<Transform>,
-        velocities: SparseSet<Velocity>,
-        cameras: SparseSet<Camera>,
-        colliders:  SparseSet<Collider>,
-        renderables: SparseSet<Renderable>,
+        // component pools
+        sdf_bases: SparseSet<SdfBase>,
+        materials: SparseSet<MaterialComponent>,
+        lights: SparseSet<LightComponent>,
         space_foldings: SparseSet<SpaceFolding>,
+        transforms: SparseSet<Transform>,
         rotatings: SparseSet<Rotating>,
+        cameras: SparseSet<Camera>,
+        velocities: SparseSet<Velocity>,
+        colliders: SparseSet<Collider>,
+
+        // GPU-side index maps
+        sdf_gpu_indices: GpuIndexMap,
+        material_gpu_indices: GpuIndexMap,
+        light_gpu_indices: GpuIndexMap,
+        folding_gpu_indices: GpuIndexMap,
+
+        // GPU buffers
+        pub gpu_sdf_objects: GpuBuffer<GpuSdfObjectBase>,
+        pub  gpu_materials: GpuBuffer<GpuMaterial>,
+        pub gpu_lights: GpuBuffer<GpuLight>,
+        pub gpu_foldings: GpuBuffer<GpuSpaceFolding>,
     }
 
     impl World{
-        pub fn new() -> Self {
-            Self {
+        pub fn new() -> Result<Self, Box<dyn Error>> {
+            Ok(Self {
                 gens: vec![],
                 free: vec![],
-                entity_to_scene_index: HashMap::new(),
-                entities_to_remove_from_gpu: vec![],
+    
                 spawned_entities: vec![],
-                empty_spaces_indices_queu: vec![],
-                texture_of_entity: HashMap::new(),
+                entities_to_remove_from_gpu: vec![],
+    
+                sdf_bases: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
+                materials: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
+                lights: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
+                space_foldings: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
                 transforms: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
+                rotatings: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
                 cameras: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
                 velocities: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
-                colliders:  SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
-                renderables: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
-                space_foldings: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
-                rotatings:  SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
-            }
+                colliders: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
+    
+                sdf_gpu_indices: GpuIndexMap::new(),
+                material_gpu_indices: GpuIndexMap::new(),
+                light_gpu_indices: GpuIndexMap::new(),
+                folding_gpu_indices: GpuIndexMap::new(),
+    
+                gpu_sdf_objects: GpuBuffer::<GpuSdfObjectBase>::new(8)?,
+                gpu_materials:   GpuBuffer::<GpuMaterial>::new(8)?,
+                gpu_lights:      GpuBuffer::<GpuLight>::new(8)?,
+                gpu_foldings:    GpuBuffer::<GpuSpaceFolding>::new(8)?,
+            })
         }
 
-        pub fn insert_transform(&mut self, e: Entity, t: Transform) {
-            self.transforms.insert(e, t);
+        pub fn insert_sdf_base(&mut self, e: Entity, sdf: SdfBase) {
+            self.sdf_bases.insert(e, sdf);
         }
-        pub fn insert_camera(&mut self, e: Entity, c: Camera) {
-            self.cameras.insert(e, c);
-        }
-        pub fn insert_renderable(&mut self, e: Entity, r: Renderable) {
-            self.texture_of_entity.insert(e.index, r.tex);
-            self.renderables.insert(e, r);
+        pub fn insert_material(&mut self, e: Entity, m: MaterialComponent) {
+            self.materials.insert(e, m);
         }
         pub fn insert_space_folding(&mut self, e: Entity, s: SpaceFolding) {
             self.space_foldings.insert(e, s);
         }
+        pub fn insert_transform(&mut self, e: Entity, t: Transform) {
+            self.transforms.insert(e, t);
+        }
+        pub fn insert_light(&mut self, e: Entity, l: LightComponent) {
+            self.lights.insert(e, l);
+        }
         pub fn insert_rotating(&mut self, e: Entity, r: Rotating) {
             self.rotatings.insert(e, r);
+        }
+        pub fn insert_camera(&mut self, e: Entity, c: Camera) {
+            self.cameras.insert(e, c);
         }
 
         pub fn spawn(&mut self) -> Entity {
@@ -266,37 +299,22 @@ pub mod ecs {
             Entity { index, generation }
         }
 
-        pub fn despawn(&mut self, e: Entity, tex_mgr: &mut TextureManager) {
+        pub fn despawn(&mut self, e: Entity) {
             let idx = e.index as usize;
-
             if self.gens.get(idx).copied() != Some(e.generation) {
-                return; // stale entity
+                return; // stale
             }
-
             self.gens[idx] += 1;
-            self.free.push(e.index);
-
-            self.transforms.remove(e);
-            self.velocities.remove(e);
-            self.colliders.remove(e);
-            self.renderables.remove(e);
-            self.cameras.remove(e);
-            self.space_foldings.remove(e);
-            self.rotatings.remove(e);
-
-            if let Some(index) = self.entity_to_scene_index.remove(&(idx as u32)) {
-                self.entities_to_remove_from_gpu.push(index)
-            }
-
-            if let Some(h) = self.texture_of_entity.remove(&e.index) {
-                let _ = tex_mgr.release(&h);
-            }
+            self.free.push(e.index);    
+    
+            // schedule GPU removal
+            self.entities_to_remove_from_gpu.push(e.index);
         }
 
         pub fn choose_camera(&self, camera_name: &str) -> Result<CameraObject, Box<dyn Error>> {
 
             for (camera, e_idx) in self.cameras.iter() {
-                if camera_name.to_string() == camera.name {
+                if camera.name == camera_name {
                     let gen = self.gens.get(e_idx as usize).copied().unwrap_or(0);
                     let e = Entity { index: e_idx, generation: gen };
 
@@ -321,187 +339,169 @@ pub mod ecs {
                         return Err(Box::from(format!("{}", msg)))
                     }
                 }
-                else {
-                    let msg = "no camera under that name (ecs)";
-                    return Err(Box::from(format!("{}", msg)))
-                }
             }
             
-            let msg = "no camera defined (ecs)";
+            let msg = "no camera under that name or no camera defined (ecs)";
             return Err(Box::from(format!("{}", msg)))
             
         }
 
-        pub fn render_scene(&mut self, scene_buffer_capacity: usize) -> Vec<SdfObject> {
-            let mut output = Vec::new();
-            self.entity_to_scene_index.clear();
-            self.empty_spaces_indices_queu.clear();
-
-            for (render, e_idx) in self.renderables.iter() {
-                let gen = self.gens.get(e_idx as usize).copied().unwrap_or(0);
-                let e = Entity { index: e_idx, generation: gen };
-
-                if let Some(tr) = self.transforms.get(e) {
-
-                    let texture = render.tex;
-                    let sdf_type_device = sdf_type_translation(render.sdf_type);
-                    let rot = tr.rotation;
-                    let default_sf = SpaceFolding::default();
-                    let sf = self.space_foldings.get(e).unwrap_or(&default_sf);
-
-
-                    let sdf = SdfObject {
-                        sdf_type: sdf_type_device,
-                        params: render.params,
-                        center: tr.position,
-                        u: rot * Vec3::X,
-                        v: rot * Vec3::Y,
-                        w: rot * Vec3::Z,
-                        texture: texture.d_ptr,
-                        tex_width: texture.width,
-                        tex_height: texture.height,
-                        lattice_basis: sf.lattice_basis,
-                        lattice_basis_inv: sf.lattice_basis_inv,
-                        active: 1,
-                    };
-                    output.push(sdf);
-
-                    self.entity_to_scene_index.insert(e_idx, output.len()-1);
-                }
-            }
-
-            for idx in output.len()..scene_buffer_capacity {
-                self.empty_spaces_indices_queu.push(idx);
-            }
-
-            // Clear dirty flags
-            self.spawned_entities = vec![];
-            self.transforms.clear_dirty_flags();
-            self.renderables.clear_dirty_flags();
-            self.entities_to_remove_from_gpu = vec![];
-
-            output
-        }
-
-        pub fn update_entity_on_gpu(
-            &self,
-            scene_buf: &mut SceneBuffer,
-            e: Entity,
-        ) -> Result<(), Box<dyn Error>> {
-            let render = self.renderables.get(e).ok_or("Missing Renderable")?;
-            let sdf_type_device = sdf_type_translation(render.sdf_type);
-            let texture = render.tex;
-            let tr = self.transforms.get(e).ok_or("Missing Transform")?;
-            let default_sf = SpaceFolding::default();
-            let sf = self.space_foldings.get(e).unwrap_or(&default_sf);
-
-            
-            let sdf = SdfObject {
-                sdf_type: sdf_type_device,
-                params: render.params,
-                center: tr.position,
-                u: tr.rotation * Vec3::X,
-                v: tr.rotation * Vec3::Y,
-                w: tr.rotation * Vec3::Z,
-                texture: texture.d_ptr,
-                tex_width: texture.width,
-                tex_height: texture.height,
-                lattice_basis: sf.lattice_basis,
-                lattice_basis_inv: sf.lattice_basis_inv,
-                active: 1,
-            };
-
-            let index = self.entity_to_scene_index.get(&e.index).ok_or("Entity not in scene")?;
-
-            unsafe { scene_buf.update_sdfobject_in_gpu_scene(*index, &sdf) }
-            
-        }
-
-
-        pub fn update_scene(
-            &mut self,
-            scene_buf: &mut SceneBuffer,
-        ) -> bool {
-
+        // Full initial upload: builds all GPU-side counterparts from existing host components.
+        pub fn update_scene(&mut self, texture_manager: &mut TextureManager) -> Result<bool, Box<dyn Error>> {
             let mut scene_updated = false;
-
-            // handles spawned entites
-            for idx in &self.spawned_entities {
-                let gen = self.gens[*idx as usize];
-                let e = Entity { index: *idx, generation: gen };
-
-                if self.renderables.contains(*idx as usize) {
-                    let index_gpu_buffer = if let Some(empty) = self.empty_spaces_indices_queu.first().copied() {
-                        self.empty_spaces_indices_queu.remove(0)
-                    } else {
-                        scene_buf.ensure_capacity(self.entity_to_scene_index.len() + 1);
-                        let new_scene = self.render_scene(scene_buf.capacity);
-                        scene_buf.upload(&new_scene);
-
-                        return true; // the scene is rerendered entirely so no need to go further
-                    };
-                    
-                    scene_buf.max_index_used = scene_buf.max_index_used.max(index_gpu_buffer);
-
-                    self.entity_to_scene_index.insert(*idx, index_gpu_buffer);
-                    self.update_entity_on_gpu(scene_buf, e);
-
+        
+            // 1. Handle removals first
+            while let Some(entity_idx) = self.entities_to_remove_from_gpu.pop() {
+                let e = Entity {
+                    index: entity_idx,
+                    generation: self.gens[entity_idx as usize],
+                };
+                if let Some(sdf_slot) = self.sdf_gpu_indices.get(e) {
+                    let active_off = offset_of!(GpuSdfObjectBase, active);
+                    self.gpu_sdf_objects.deactivate_sdf(sdf_slot, active_off)?;
+                    self.sdf_gpu_indices.free_for(e);
                     scene_updated = true;
                 }
+                if let Some(_mat_slot) = self.material_gpu_indices.get(e) {
+                    // release TextureHandle via the TextureManager
+                    let mat = self.materials.get(e).unwrap();
+                    if let Some(tex) = &mat.texture {
+                        texture_manager.release(tex)?;
+                    }
+                    self.material_gpu_indices.free_for(e);
+                    scene_updated = true;
+                }
+                if let Some(_fold_slot) = self.folding_gpu_indices.get(e) {
+                    self.folding_gpu_indices.free_for(e);
+                    scene_updated = true;
+                }
+                if let Some(_light_slot) = self.light_gpu_indices.get(e) {
+                    self.light_gpu_indices.free_for(e);
+                    scene_updated = true;
+                }
+
+                // remove host components
+                self.transforms.remove(e);
+                self.sdf_bases.remove(e);
+                self.materials.remove(e);
+                self.space_foldings.remove(e);
+                self.lights.remove(e);
+                self.rotatings.remove(e);
+                self.cameras.remove(e);
+                self.velocities.remove(e);
+                self.colliders.remove(e);
             }
-
-            self.spawned_entities.clear();
-
-            // handles updates on transform or renderables
-            let mut already_updated_entities:Vec<Entity> = vec![];
-
-            for (transform, idx) in self.transforms.iter_dirty() {
-                let gen = self.gens[idx as usize];
-                let e = Entity { index: idx, generation: gen };
-                self.update_entity_on_gpu(scene_buf, e);
-                already_updated_entities.push(e);
-
+        
+            // 2. Sync space foldings (dirty or new)
+            for (_fold, idx) in self.space_foldings.iter_dirty() {
+                let e = Entity { index: idx, generation: self.gens[idx as usize] };
+                let gpu_slot = self.folding_gpu_indices.get_or_allocate_for(e);
+                let folding = self.space_foldings.get(e).unwrap(); // safe
+                let gpu_struct = GpuSpaceFolding {
+                    lattice_basis: folding.lattice_basis,
+                    lattice_basis_inv: folding.lattice_basis_inv,
+                };
+                self.gpu_foldings.push(gpu_slot, &gpu_struct)?;
                 scene_updated = true;
             }
-            
-            for (renderable, idx) in self.renderables.iter_dirty() {
-            
-                let gen = self.gens[idx as usize];
-                let e = Entity { index: idx, generation: gen };
-
-                if !already_updated_entities.contains(&e) {
-                    self.update_entity_on_gpu(scene_buf, e);
-                    scene_updated = true;
-                }
+        
+            // 3. Sync materials (dirty)
+            for (_mat, idx) in self.materials.iter_dirty() {
+                let e = Entity { index: idx, generation: self.gens[idx as usize] };
+                let gpu_slot = self.material_gpu_indices.get_or_allocate_for(e);
+                let mat = self.materials.get(e).unwrap();
+        
+                let (texture_data_pointer, width, height) = if let Some(tex) = &mat.texture {
+                    (tex.d_ptr, tex.width, tex.height)
+                } else {
+                    (0, 0, 0)
+                };
+                let use_texture_flag = if mat.use_texture { 1 } else { 0 };
+        
+                let gpu_struct = GpuMaterial {
+                    color: mat.color,
+                    use_texture: use_texture_flag,
+                    texture_data_pointer: texture_data_pointer,
+                    width: width,
+                    height: height,
+                };
+                self.gpu_materials.push(gpu_slot, &gpu_struct)?;
+                scene_updated = true;
             }
-            
-            // Clear dirty flags
+        
+            // 4. Sync lights (dirty)
+            for (_light, idx) in self.lights.iter_dirty() {
+                let e = Entity { index: idx, generation: self.gens[idx as usize] };
+                let gpu_slot = self.light_gpu_indices.get_or_allocate_for(e);
+                let light = self.lights.get(e).unwrap();
+                let gpu_struct = GpuLight {
+                    position: light.position,
+                    color: light.color,
+                    intensity: light.intensity,
+                };
+                self.gpu_lights.push(gpu_slot, &gpu_struct)?;
+                scene_updated = true;
+            }
+        
+            // 5. Sync SDF bases / transforms / dependency-driven rebuilds
+            let mut to_update_sdf_set: HashSet<u32> = HashSet::new();
+            for (_sdf, idx) in self.sdf_bases.iter_dirty() { to_update_sdf_set.insert(idx); }
+            for (_tr, idx) in self.transforms.iter_dirty() { to_update_sdf_set.insert(idx); }
+            for (_mat, idx) in self.materials.iter_dirty() { to_update_sdf_set.insert(idx); }
+            for (_fold, idx) in self.space_foldings.iter_dirty() { to_update_sdf_set.insert(idx); }
+            for (_light, idx) in self.lights.iter_dirty() { to_update_sdf_set.insert(idx); }
+        
+            for idx in to_update_sdf_set {
+                let e = Entity { index: idx, generation: self.gens[idx as usize] };
+        
+                let sdf_base = match self.sdf_bases.get(e) { Some(s) => s, None => continue };
+                let transform = match self.transforms.get(e) { Some(t) => t, None => continue };
+        
+                let gpu_slot = self.sdf_gpu_indices.get_or_allocate_for(e);
+        
+                let material_id = self
+                    .material_gpu_indices
+                    .get(e)
+                    .map(|i| i as u32)
+                    .unwrap_or(INVALID_MATERIAL);
+                let folding_id = self
+                    .folding_gpu_indices
+                    .get(e)
+                    .map(|i| i as u32)
+                    .unwrap_or(INVALID_FOLDING);
+                let light_id = self
+                    .light_gpu_indices
+                    .get(e)
+                    .map(|i| i as u32)
+                    .unwrap_or(INVALID_LIGHT);
+        
+                let sdf_obj = GpuSdfObjectBase {
+                    sdf_type: sdf_type_translation(sdf_base.sdf_type) as i32,
+                    params: sdf_base.params,
+                    center: transform.position,
+                    u: transform.rotation * Vec3::X,
+                    v: transform.rotation * Vec3::Y,
+                    w: transform.rotation * Vec3::Z,
+                    material_id,
+                    light_id,
+                    lattice_folding_id: folding_id,
+                    active: 1,
+                };
+                self.gpu_sdf_objects.push(gpu_slot, &sdf_obj)?;
+                scene_updated = true;
+            }
+        
+            // 6. Clear dirty flags
+            self.space_foldings.clear_dirty_flags();
+            self.materials.clear_dirty_flags();
+            self.lights.clear_dirty_flags();
+            self.sdf_bases.clear_dirty_flags();
             self.transforms.clear_dirty_flags();
-            self.renderables.clear_dirty_flags();
-
-            // Handles removed entities
-            for idx in &self.entities_to_remove_from_gpu {
-                scene_buf.deactivate(*idx);
-                scene_updated = true;
-                self.empty_spaces_indices_queu.push(*idx);
-                self.empty_spaces_indices_queu.sort();
-            }
-            let max_index_gpu: Option<usize> = self.entity_to_scene_index
-                .values()   // iterates over &usize
-                .copied()   // turn &usize → usize
-                .max();     // returns Option<usize>
-
-            match max_index_gpu {
-                Some(m) => scene_buf.max_index_used = m,
-                None    => scene_buf.max_index_used = 0, //no more objects in the scene
-            }
-
-            self.entities_to_remove_from_gpu = vec![];
-
-            return scene_updated
+        
+            self.spawned_entities.clear();
+            Ok(scene_updated)
         }
     }
-
 
     // System
 

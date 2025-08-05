@@ -1,7 +1,8 @@
 use cuda_driver_sys::*;
-use crate::ecs::ecs_gpu_interface::ecs_gpu_interface::SdfObject;
 use std::{collections::HashMap, ffi::{c_void, CString}, ptr::null_mut, error::Error};
 use memoffset::offset_of;
+use std::mem::size_of;
+use std::marker::PhantomData;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -162,19 +163,6 @@ impl CudaContext {
         Ok(device_ptr)
     }
 
-    pub fn allocate_scene(scene: &[SdfObject]) -> Result<CUdeviceptr, Box<dyn Error>> {
-        let size = scene.len() * std::mem::size_of::<SdfObject>();
-        let mut d_ptr: CUdeviceptr = 0;
-        unsafe {
-            check_cuda_result(cuMemAlloc_v2(&mut d_ptr, size), "cuMemAlloc scene")?;
-            check_cuda_result(
-                cuMemcpyHtoD_v2(d_ptr, scene.as_ptr() as *const c_void, size),
-                "cuMemcpyHtoD scene"
-            )?;
-        }
-        Ok(d_ptr)
-    }
-
     pub fn copy_host_to_device<T>(dst: CUdeviceptr, src: &[T]) -> Result<(), Box<dyn Error>> {
         let size = src.len() * std::mem::size_of::<T>();
         unsafe { check_cuda_result(cuMemcpyHtoD_v2(dst, src.as_ptr() as *const c_void, size), "copy (cuMemcpyHtoD_v2)")?; }
@@ -315,95 +303,124 @@ impl Drop for CudaContext {
     }
 }
 
-// Gère le buffer GPU qui contient la scène.
-pub struct SceneBuffer {
-    d_ptr:    CUdeviceptr,
-    pub capacity: usize,            // Nombre maximum de SdfObject que le buffer peut contenir
-    pub max_index_used: usize,
+pub struct GpuBuffer<T> {
+    d_ptr: CUdeviceptr,
+    pub capacity: usize, // how many T elements allocated
+    pub len: usize,
+    _marker: PhantomData<T>,
 }
 
-impl SceneBuffer {
-    pub fn new(capacity: usize) -> Result<Self, Box<dyn Error>> {
-        // alloue capacity objets, zéro au départ
-        let dummy: Vec<SdfObject> = vec![SdfObject::default(); capacity];
-        let d_ptr = CudaContext::allocate_scene(&dummy)?;
-        let max_index_used = 0;
-        Ok(Self { d_ptr, capacity, max_index_used })
-    }
+impl<T> GpuBuffer<T> {
+    pub fn new(initial_capacity: usize) -> Result<Self, Box<dyn Error>> {
+        let mut d_ptr: CUdeviceptr = 0;
+        let size_bytes = (initial_capacity * size_of::<T>()) as usize;
 
-    /// s’assure que `capacity >= needed`; réalloue si nécessaire
-    pub fn ensure_capacity(
-        &mut self,
-        needed: usize,
-    ) -> Result<(), Box<dyn Error>> {
-        if needed <= self.capacity { return Ok(()); }
-
-        // libère l’ancien
-        CudaContext::free_device_memory(self.d_ptr)?;
-
-        // nouvelle taille = puissance de 2 supérieure → évite de réallouer à chaque frame
-        self.capacity = needed.next_power_of_two();
-        let dummy: Vec<SdfObject> = vec![SdfObject::default(); self.capacity];
-        self.d_ptr = CudaContext::allocate_scene(&dummy)?;
-        Ok(())
-    }
-
-    pub fn upload(
-        &mut self,
-        objects: &[SdfObject],
-    ) -> Result<(), Box<dyn Error>> {
-        
-        if objects.is_empty() {
-            self.max_index_used = 0;
-        } else if self.max_index_used < objects.len() - 1 {
-            self.max_index_used = objects.len() - 1;
-        }
-        CudaContext::copy_host_to_device(self.d_ptr, objects)
-    }
-
-    pub fn ptr(&self) -> CUdeviceptr { self.d_ptr }
-
-    pub fn update_sdfobject_in_gpu_scene(
-        &mut self,
-        index: usize,
-        updated: &SdfObject,
-    ) -> Result<(), Box<dyn Error>> {
-        if index >= self.capacity {
-            return Err("Index out of bounds".into());
-        }
-    
-        let obj_size = std::mem::size_of::<SdfObject>();
-        let offset = (self.ptr() as usize + index * obj_size) as CUdeviceptr;
-        
         unsafe {
-            check_cuda_result(cuMemcpyHtoD_v2(offset, updated as *const _ as *const _, obj_size as usize), "update_sdfobject_in_gpu_scene");
+        check_cuda_result(cuMemAlloc_v2(&mut d_ptr, size_bytes), "cuMemAlloc_v2 GpuBuffer.new")?;
         }
 
+        Ok(Self {
+            d_ptr,
+            capacity: initial_capacity,
+            len: 0,
+            _marker: PhantomData,
+        })
+    }
+
+    pub fn ptr(&self) -> CUdeviceptr {
+        self.d_ptr
+    }
+
+    pub fn ensure_capacity(&mut self, needed: usize) -> Result<(), Box<dyn Error>> {
+        if needed <= self.capacity {
+            return Ok(());
+        }
+        let new_capacity = needed.next_power_of_two();
+        let new_size = (new_capacity * size_of::<T>()) as usize;
+        let mut new_ptr: CUdeviceptr = 0;
+        unsafe {
+            check_cuda_result(cuMemAlloc_v2(&mut new_ptr, new_size), "cuMemAlloc_v2 GpuBuffer::ensure_capacity")?;
+            // copy existing data device->device
+            let old_size = (self.capacity * size_of::<T>()) as usize;
+            check_cuda_result(cuMemcpyDtoD_v2(new_ptr, self.d_ptr, old_size), "cuMemcpyDtoD_v2 GpuBuffer::ensure_capacity")?;
+            // free old
+            check_cuda_result(cuMemFree_v2(self.d_ptr), "cuMemFree_v2 GpuBuffer::ensure_capacity")?;
+        }
+        self.d_ptr = new_ptr;
+        self.capacity = new_capacity;
         Ok(())
     }
 
-    pub fn deactivate(&mut self, index: usize) -> Result<(), Box<dyn Error>> {
+    pub fn upload_all(&mut self, slice: &[T]) -> Result<(), Box<dyn Error>> {
+        let required = slice.len();
+        self.ensure_capacity(required)?;
+        let bytes = required * size_of::<T>();
+        unsafe {
+            check_cuda_result( cuMemcpyHtoD_v2(self.d_ptr, slice.as_ptr() as *const _, bytes), "cuMemcpyHtoD_v2 GpuBuffer::upload_all")?;
+        }
+        self.len = required;
+        Ok(())
+    }
+
+    fn update_element(&self, index: usize, elem: &T) -> Result<(), Box<dyn Error>> {
         if index >= self.capacity {
-            return Err("Index out of bounds".into());
+            return Err(Box::from("Index out of bounds in GpuBuffer::update_element"));
+        }
+        let offset = (index * size_of::<T>()) as usize;
+        unsafe {
+            check_cuda_result(
+                cuMemcpyHtoD_v2(self.d_ptr + offset as CUdeviceptr, elem as *const _ as *const _, size_of::<T>()),
+                "cuMemcpyHtoD_v2 GpuBuffer::update_element",
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn push(&mut self, index: usize, elem: &T) -> Result<usize, Box<dyn Error>> {
+        // 1) grow if needed
+        if index >= self.capacity {
+            self.ensure_capacity(index + 1)?;
         }
 
-        // byte offset of the flag in **this element**
-        let byte_off = (index * std::mem::size_of::<SdfObject>()) + offset_of!(SdfObject, active);
-        let dst = self.ptr() + byte_off as CUdeviceptr;
+        // 2) copy into the device at that slot
+        self.update_element(index, elem)?;
 
+        // 3) adjust len
+        if index + 1 > self.len {
+            self.len = index + 1;
+        }
+
+        Ok(index)
+    }
+
+    pub fn deactivate_sdf(&self, index: usize, active_offset: usize) -> Result<(), Box<dyn Error>> {
+        if index >= self.capacity {
+            return Err(Box::from("Index out of bounds in GpuBuffer::deactivate_element"));
+        }
+        let elem_size = std::mem::size_of::<T>();
+        let active_size = std::mem::size_of::<u32>(); // adjust if `active` is a different type
+        if active_offset + active_size > elem_size {
+            return Err(Box::from("active_offset out of bounds in GpuBuffer::deactivate_element"));
+        }
+
+        // Compute device pointer to the active field of the given element
+        let dest_ptr: CUdeviceptr = self.d_ptr + (index * elem_size + active_offset) as CUdeviceptr;
         let zero: u32 = 0;
-
         unsafe {
-            check_cuda_result(cuMemcpyHtoD_v2(dst, &zero as *const _ as *const _, std::mem::size_of::<u32>() as usize), "deactivate in SceneBuffer");
+            check_cuda_result(
+                cuMemcpyHtoD_v2(dest_ptr, &zero as *const _ as *const c_void, active_size),
+                "GpuBuffer::deactivate_element",
+            )?;
         }
         Ok(())
     }
-
 }
 
-impl Drop for SceneBuffer {
-    fn drop(&mut self) {                                      // libère proprement
-        let _ = CudaContext::free_device_memory(self.d_ptr);
+impl<T> Drop for GpuBuffer<T> {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = cuMemFree_v2(self.d_ptr);
+        }
     }
 }
 

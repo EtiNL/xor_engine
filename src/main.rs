@@ -12,8 +12,8 @@ use std::path::Path;
 use cuda_driver_sys::cuGraphAddDependencies;
 
 use display::{Display, FpsCounter};
-use cuda_wrapper::{CudaContext, SceneBuffer, ImageRayAccum, dim3};
-use ecs::ecs::{World, update_rotation, Transform, Camera, Renderable, Rotating, SpaceFolding};
+use cuda_wrapper::{CudaContext, ImageRayAccum, dim3};
+use ecs::ecs::{World, update_rotation, Transform, Camera, SdfBase, MaterialComponent, Rotating, SpaceFolding};
 use ecs::math_op::math_op::{Vec3, Quat, Mat3};
 use crate::ecs::ecs_gpu_interface::ecs_gpu_interface::{SdfType, TextureManager};
 
@@ -28,60 +28,71 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut last_frame_time = Instant::now();
 
-    let mut world = World::new();
+    let mut world = World::new()?;
 
-    let camera = world.spawn();
-    world.insert_camera(camera, Camera {
-        name: "first".to_string(),
-        field_of_view: 45.0,    // in degrees
-        width: width,
-        height: height,
+    // — CAMERA — 
+    let cam_ent = world.spawn();
+    world.insert_camera(cam_ent, Camera {
+        name: "first".into(),
+        field_of_view: 45.0,
+        width,
+        height,
         aperture: 0.0,
-        focus_distance: 1.0
+        focus_distance: 1.0,
     });
-    world.insert_transform(camera, Transform {
-        position: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
-        rotation: Quat::identity(), // need to be changed so z = -1
+    world.insert_transform(cam_ent, Transform {
+        position: Vec3::new(0.0, 0.0, 0.0),
+        rotation: Quat::identity(),
     });
 
+    // Texture manager stays the same
     let mut tex_mgr = TextureManager::new();
 
-    let mut cube = world.spawn();
-    world.insert_transform(cube, Transform {
+    // — CUBE — 
+    let mut cube_ent = world.spawn();
+    world.insert_transform(cube_ent, Transform {
         position: Vec3::new(0.0, 0.0, -10.0),
         rotation: Quat::identity(),
     });
-    world.insert_renderable(
-        cube,
-        Renderable::new(
-            SdfType::Cube,
-            [1.0; 3],
-            Path::new("./src/textures/lines_texture.png"),
-            &mut tex_mgr,
-        )?,
-    );
-    world.insert_rotating(cube, Rotating {
+    // 1) SDF shape
+    world.insert_sdf_base(cube_ent, SdfBase {
+        sdf_type: SdfType::Cube,
+        params: [1.0, 1.0, 1.0], // half-extents
+    });
+    // 2) Material
+    let cube_tex = tex_mgr.load(Path::new("./src/textures/lines_texture.png"))?;
+    world.insert_material(cube_ent, MaterialComponent {
+        color: [1.0, 1.0, 1.0],
+        texture: Some(cube_tex),
+        use_texture: true,
+    });
+    // 3) Rotation
+    world.insert_rotating(cube_ent, Rotating {
         speed_deg_per_sec: 30.0,
     });
 
-    let sphere = world.spawn();
-    world.insert_transform(sphere, Transform {
+    // — SPHERE — 
+    let sphere_ent = world.spawn();
+    world.insert_transform(sphere_ent, Transform {
         position: Vec3::new(0.0, 0.0, -10.0),
         rotation: Quat::identity(),
     });
-    world.insert_renderable(
-        sphere,
-        Renderable::new(
-            SdfType::Sphere,
-            [1.5, 0.0, 0.0],
-            Path::new("./src/textures/Wood_texture.png"),
-            &mut tex_mgr,
-        )?,
-    );
-    world.insert_space_folding(sphere, 
-        SpaceFolding::new(Mat3::Id*10.0));
-
-    world.insert_rotating(sphere, Rotating {
+    // SDF
+    world.insert_sdf_base(sphere_ent, SdfBase {
+        sdf_type: SdfType::Sphere,
+        params: [1.5, 0.0, 0.0], // radius, unused, unused
+    });
+    // Material
+    let wood_tex = tex_mgr.load(Path::new("./src/textures/Wood_texture.png"))?;
+    world.insert_material(sphere_ent, MaterialComponent {
+        color: [1.0, 1.0, 1.0],
+        texture: Some(wood_tex),
+        use_texture: true,
+    });
+    // Lattice‐folding
+    world.insert_space_folding(sphere_ent, SpaceFolding::new(Mat3::Id * 10.0));
+    // Rotation
+    world.insert_rotating(sphere_ent, Rotating {
         speed_deg_per_sec: 30.0,
     });
 
@@ -104,10 +115,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     cuda_context.create_stream("stream1")?;
 
     // Allocate GPU memory
-    let mut scene_buf = SceneBuffer::new(2)?;   // 8 = nombre de sdf object initiale arbitraire
-    let scene_cpu = world.render_scene(scene_buf.capacity);
     let mut first_image: bool = true;
-    scene_buf.upload(&scene_cpu)?;
+    world.update_scene(&mut tex_mgr)?;
 
     let cam = world.choose_camera("first")?;
     let d_camera = CudaContext::allocate_struct(&cam)?;
@@ -181,13 +190,22 @@ fn main() -> Result<(), Box<dyn Error>> {
         block_dim,
     )?;
 
+    let sdf_ptr   = world.gpu_sdf_objects.ptr();
+    let num_sdfs  = world.gpu_sdf_objects.len as i32;
+    let mat_ptr   = world.gpu_materials  .ptr();
+    let light_ptr = world.gpu_lights     .ptr();
+    let fold_ptr  = world.gpu_foldings   .ptr();
+
     let params_raymarch = vec![
-        &width as *const _ as *const c_void,
-        &height as *const _ as *const c_void,
-        &d_origins as *const _ as *const c_void,
+        &width       as *const _ as *const c_void,
+        &height      as *const _ as *const c_void,
+        &d_origins   as *const _ as *const c_void,
         &d_directions as *const _ as *const c_void,
-        &scene_buf.ptr() as *const _ as *const c_void,
-        &(scene_buf.max_index_used as i32 +1) as *const _ as *const c_void,
+        &sdf_ptr     as *const _ as *const c_void,
+        &num_sdfs    as *const _ as *const c_void,
+        &mat_ptr     as *const _ as *const c_void,
+        &light_ptr   as *const _ as *const c_void,
+        &fold_ptr    as *const _ as *const c_void,
         &d_ray_accum as *const _ as *const c_void,
     ];
 
@@ -234,27 +252,26 @@ fn main() -> Result<(), Box<dyn Error>> {
                 },
 
                 Event::KeyDown { keycode: Some(Keycode::S), .. } => {
-                    cube = world.spawn();
-                    world.insert_transform(cube, Transform {
-                        position: Vec3::new(0.0, 0.0, -5.0),
+                    cube_ent = world.spawn();
+                    world.insert_transform(cube_ent, Transform {
+                        position: Vec3::new(0.0, 0.0, -10.0),
                         rotation: Quat::identity(),
                     });
-                    world.insert_renderable(
-                        cube,
-                        Renderable::new(
-                            SdfType::Cube,
-                            [1.0; 3],
-                            Path::new("./src/textures/lines_texture.png"),
-                            &mut tex_mgr,
-                        )?,
-                    );
-                    world.insert_rotating(cube, Rotating {
-                        speed_deg_per_sec: 30.0,
+                    world.insert_sdf_base(cube_ent, SdfBase {
+                    sdf_type: SdfType::Cube,
+                    params: [1.0,1.0,1.0],
                     });
+                    let tex = tex_mgr.load(Path::new("./src/textures/lines_texture.png"))?;
+                    world.insert_material(cube_ent, MaterialComponent {
+                    color: [1.0,1.0,1.0],
+                    texture: Some(tex),
+                    use_texture: true,
+                    });
+                    world.insert_rotating(cube_ent, Rotating { speed_deg_per_sec:30.0 });
                 },
 
                 Event::MouseButtonDown { x, y, .. } => {
-                    world.despawn(cube, &mut tex_mgr);
+                    world.despawn(cube_ent);
 
                     let mut mouse_down_lock = mouse_down.lock().unwrap();
                     *mouse_down_lock = true;
@@ -284,23 +301,33 @@ fn main() -> Result<(), Box<dyn Error>> {
             update_rotation(&mut world, dt, rotation_dir);
         }
 
-        if first_image || world.update_scene(&mut scene_buf) {
-            //reset params scene_buffer pointer that changes when it needs more sloths for sdfobject for the raymarch kernel
-            let new_scene_ptr = scene_buf.ptr();
-            let new_params_raymarch: Vec<*const c_void> = vec![
-                &width                  as *const _ as *const c_void,
-                &height                 as *const _ as *const c_void,
-                &d_origins              as *const _ as *const c_void,
-                &d_directions           as *const _ as *const c_void,
-                &new_scene_ptr          as *const _ as *const c_void,
-                &(scene_buf.max_index_used as i32 +1) as *const _ as *const c_void,
-                &d_ray_accum            as *const _ as *const c_void,
-            ];
-            cuda_context.exec_kernel_node_set_params(
-                graph_exec,
-                "raymarch",
-                &new_params_raymarch,
-            )?;
+        if first_image || world.update_scene(&mut tex_mgr)? {
+
+            if !first_image {
+                let sdf_ptr   = world.gpu_sdf_objects.ptr();
+                let num_sdfs  = world.gpu_sdf_objects.len as i32;
+                let mat_ptr   = world.gpu_materials.ptr();
+                let light_ptr = world.gpu_lights .ptr();
+                let fold_ptr  = world.gpu_foldings.ptr();
+
+                let params_raymarch = vec![
+                    &width       as *const _ as *const c_void,
+                    &height      as *const _ as *const c_void,
+                    &d_origins   as *const _ as *const c_void,
+                    &d_directions as *const _ as *const c_void,
+                    &sdf_ptr     as *const _ as *const c_void,
+                    &num_sdfs    as *const _ as *const c_void,
+                    &mat_ptr     as *const _ as *const c_void,
+                    &light_ptr   as *const _ as *const c_void,
+                    &fold_ptr    as *const _ as *const c_void,
+                    &d_ray_accum as *const _ as *const c_void,
+                ];
+                cuda_context.exec_kernel_node_set_params(
+                    graph_exec,
+                    "raymarch",
+                    &params_raymarch,
+                )?;
+            }
 
             // Launch the graph
             cuda_context.launch_graph(graph_exec)?;

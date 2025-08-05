@@ -5,6 +5,8 @@ pub mod ecs_gpu_interface {
     use cuda_driver_sys::CUdeviceptr;
     use crate::ecs::math_op::math_op::{Vec3, Mat3};
     use crate::cuda_wrapper::CudaContext;
+    use crate::ecs::ecs::Entity;
+
 
     #[repr(C)]
     #[derive(Clone, Copy, Debug)]
@@ -66,38 +68,91 @@ pub mod ecs_gpu_interface {
     }
 
 
-    #[repr(C, align(8))]
+    pub const INVALID_MATERIAL: u32 = 0xFFFFFFFF;
+    pub const INVALID_LIGHT: u32 = 0xFFFFFFFF;
+    pub const INVALID_FOLDING: u32 = 0xFFFFFFFF;
+
+    #[repr(C)]
     #[derive(Clone, Copy, Debug)]
-    pub struct SdfObject {
-        pub sdf_type: u32,
+    pub struct GpuSdfObjectBase {
+        pub sdf_type: i32,
         pub params: [f32; 3],
         pub center: Vec3,
         pub u: Vec3,
         pub v: Vec3,
         pub w: Vec3,
-        pub texture: CUdeviceptr,           // pointeur vers image device
-        pub tex_width: u32,
-        pub tex_height: u32,
-        pub lattice_basis: Mat3,
-        pub lattice_basis_inv: Mat3,
+        pub material_id: u32,
+        pub light_id: u32,
+        pub lattice_folding_id: u32,
         pub active: u32,
     }
-
-    impl Default for SdfObject {
+    impl Default for GpuSdfObjectBase {
         fn default() -> Self {
-            SdfObject {
+            GpuSdfObjectBase {
                 sdf_type: 0,
                 params: [0.0; 3],
                 center: Vec3::default(),
                 u: Vec3::default(),
                 v: Vec3::default(),
                 w: Vec3::default(),
-                texture: 0,
-                tex_width: 0,
-                tex_height: 0,
+                material_id: INVALID_MATERIAL,
+                light_id: INVALID_LIGHT,
+                lattice_folding_id: INVALID_FOLDING,
+                active: 0,
+            }
+        }
+    }
+    
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug)]
+    pub struct GpuMaterial {
+        pub color: [f32; 3],
+        pub use_texture: u32,
+        pub texture_data_pointer: CUdeviceptr,
+        pub width: u32,
+        pub height: u32,
+        // pad if necessary for alignment
+    }
+    impl Default for GpuMaterial {
+        fn default() -> Self {
+            GpuMaterial {
+                color: [0.0; 3],
+                use_texture: 0,
+                texture_data_pointer: 0,
+                width: 0,
+                height: 0,
+            }
+        }
+    }
+    
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug)]
+    pub struct GpuLight {
+        pub position: Vec3,
+        pub color: Vec3,
+        pub intensity: f32,
+    }
+    impl Default for GpuLight {
+        fn default() -> Self {
+            GpuLight {
+                position: Vec3::default(),
+                color: Vec3::default(),
+                intensity: 0.0,
+            }
+        }
+    }
+    
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug)]
+    pub struct GpuSpaceFolding {
+        pub lattice_basis: Mat3,
+        pub lattice_basis_inv: Mat3,
+    }
+    impl Default for GpuSpaceFolding {
+        fn default() -> Self {
+            GpuSpaceFolding {
                 lattice_basis: Mat3::Zero,
                 lattice_basis_inv: Mat3::Zero,
-                active: 0,
             }
         }
     }
@@ -168,6 +223,58 @@ pub mod ecs_gpu_interface {
             }
             }
             Ok(())
+        }
+    }
+
+    /// Maps Entity → GPU index, with free-list reuse.
+    pub struct GpuIndexMap {
+        sparse: Vec<usize>,    // entity.index -> gpu index or usize::MAX
+        free: Vec<usize>,      // recycled gpu indices
+        next: usize,           // next fresh index when free is empty
+    }
+
+    impl GpuIndexMap {
+        pub fn new() -> Self {
+            Self {
+                sparse: vec![],
+                free: vec![],
+                next: 0,
+            }
+        }
+
+        pub fn allocate_for(&mut self, e: Entity) -> usize {
+            let gpu_index = self.free.pop().unwrap_or_else(|| {
+                let idx = self.next;
+                self.next += 1;
+                idx
+            });
+            if e.index as usize >= self.sparse.len() {
+                self.sparse.resize(e.index as usize + 1, usize::MAX);
+            }
+            self.sparse[e.index as usize] = gpu_index;
+            gpu_index
+        }
+
+        pub fn get(&self, e: Entity) -> Option<usize> {
+            self.sparse
+                .get(e.index as usize)
+                .copied()
+                .filter(|&v| v != usize::MAX)
+        }
+
+        pub fn get_or_allocate_for(&mut self, e: Entity) -> usize {
+            if let Some(idx) = self.get(e) {
+                idx
+            } else {
+                self.allocate_for(e)
+            }
+        }
+
+        pub fn free_for(&mut self, e: Entity) {
+            if let Some(idx) = self.get(e) {
+                self.free.push(idx);
+                self.sparse[e.index as usize] = usize::MAX;
+            }
         }
     }
 }
