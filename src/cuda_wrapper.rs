@@ -424,6 +424,55 @@ impl<T> Drop for GpuBuffer<T> {
     }
 }
 
+
+pub struct CameraBuffers {
+    pub rand_states: CUdeviceptr,
+    pub origins:     CUdeviceptr,
+    pub directions:  CUdeviceptr,
+    pub accum:       CUdeviceptr,   // struct on device
+    pub ray_per_pixel: CUdeviceptr, // int*
+    pub image:       CUdeviceptr,
+    pub w: u32,
+    pub h: u32,
+}
+
+impl CameraBuffers {
+    /// allocate once – call *before* you build any `GpuCamera`
+    pub fn new(cuda:&CudaContext, w:u32, h:u32) -> Result<CameraBuffers, Box<dyn Error>> {
+        let total  = (w*h) as usize;
+
+        let rand_states = CudaContext::allocate_curand_states(w,h)?;
+
+        let origins     = CudaContext::allocate_tensor::<f32>(
+                              &vec![0.0; total*3], total*3*std::mem::size_of::<f32>())?;
+        let directions  = CudaContext::allocate_tensor::<f32>(
+                              &vec![0.0; total*3], total*3*std::mem::size_of::<f32>())?;
+
+        // ray counter + rgb image
+        let d_ray_per_pixel = CudaContext::allocate_tensor::<i32>(&vec![0; total], total * std::mem::size_of::<i32>())?;
+        let d_image         = CudaContext::allocate_tensor::<u8>(
+                                   &vec![0u8; total*3], total*3)?;
+
+        let accum_struct = ImageRayAccum { ray_per_pixel: d_ray_per_pixel,
+                                           image:         d_image };
+        let accum = CudaContext::allocate_struct(&accum_struct)?;
+
+        Ok(Self { rand_states, origins, directions,
+                accum, ray_per_pixel: d_ray_per_pixel,
+                image: d_image, w, h })
+    }
+}
+impl Drop for CameraBuffers {
+    fn drop(&mut self) {
+        // free in reverse order – ignore errors because we’re in Drop
+        let _ = unsafe { cuMemFree_v2(self.image) };
+        let _ = unsafe { cuMemFree_v2(self.accum) };
+        let _ = unsafe { cuMemFree_v2(self.directions) };
+        let _ = unsafe { cuMemFree_v2(self.origins) };
+        let _ = unsafe { cuMemFree_v2(self.rand_states) };
+    }
+}
+
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct ImageRayAccum {

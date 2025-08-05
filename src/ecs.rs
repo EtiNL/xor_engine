@@ -12,12 +12,12 @@ pub mod ecs {
     use memoffset::offset_of;
 
     use crate::ecs::ecs_gpu_interface::ecs_gpu_interface::{
-        CameraObject, SdfType, sdf_type_translation,
+        GpuCamera, SdfType, sdf_type_translation,
         GpuIndexMap, TextureManager, TextureHandle,
         GpuSdfObjectBase, GpuMaterial, GpuLight, GpuSpaceFolding,
         INVALID_MATERIAL, INVALID_LIGHT, INVALID_FOLDING,
     };
-    use crate::cuda_wrapper::GpuBuffer;
+    use crate::cuda_wrapper::{GpuBuffer, CameraBuffers, CudaContext};
     use crate::ecs::math_op::math_op::{Vec3, Quat, Mat3};
 
 
@@ -35,6 +35,44 @@ pub mod ecs {
     }
 
     // Components
+    #[derive(Clone, Copy, Debug)]
+    pub struct Camera {
+        pub width: u32,
+        pub height: u32,
+        pub aperture: f32,
+        pub focus_distance: f32,
+        pub viewport_width: f32,
+        pub viewport_height: f32,
+        pub spp: u32,        // sample per pixel, if you want it here
+    }
+
+    impl Camera {
+        pub fn new(
+            fov: f32,
+            width: u32,
+            height: u32,
+            aperture: f32,
+            focus_dist: f32,
+            spp: u32,
+        ) -> Self {
+            let aspect_ratio = width as f32 / height as f32;
+
+            // Champ de vision vertical → taille plan image
+            let theta = fov.to_radians();
+            let viewport_height = 2.0 * (theta / 2.0).tan();
+            let viewport_width = aspect_ratio * viewport_height;
+
+            Self {
+                width: width,
+                height: height,
+                aperture: aperture,
+                focus_distance: focus_dist,
+                viewport_width: viewport_width,
+                viewport_height: viewport_height,
+                spp: spp,
+            }
+        }
+    }
 
     #[derive(Clone, Copy, Debug)]
     pub struct SdfBase {
@@ -72,16 +110,6 @@ pub mod ecs {
             let lattice_basis_inv: Mat3 = lattice_basis.inv();
             Self { lattice_basis, lattice_basis_inv }
         }
-    }
-
-    #[derive(Clone, Debug)]
-    pub struct Camera {
-        pub name: String,
-        pub field_of_view: f32,    // in degrees
-        pub width: u32,
-        pub height: u32,
-        pub aperture: f32,
-        pub focus_distance: f32
     }
 
     #[derive(Clone, Copy, Debug, Default)]
@@ -209,27 +237,32 @@ pub mod ecs {
         entities_to_remove_from_gpu: Vec<u32>,
 
         // component pools
+        cameras: SparseSet<Camera>,
         sdf_bases: SparseSet<SdfBase>,
         materials: SparseSet<MaterialComponent>,
         lights: SparseSet<LightComponent>,
         space_foldings: SparseSet<SpaceFolding>,
         transforms: SparseSet<Transform>,
         rotatings: SparseSet<Rotating>,
-        cameras: SparseSet<Camera>,
         velocities: SparseSet<Velocity>,
         colliders: SparseSet<Collider>,
 
         // GPU-side index maps
+        camera_gpu_indices: GpuIndexMap,
         sdf_gpu_indices: GpuIndexMap,
         material_gpu_indices: GpuIndexMap,
         light_gpu_indices: GpuIndexMap,
         folding_gpu_indices: GpuIndexMap,
 
         // GPU buffers
+        pub gpu_cameras: GpuBuffer<GpuCamera>,
         pub gpu_sdf_objects: GpuBuffer<GpuSdfObjectBase>,
         pub  gpu_materials: GpuBuffer<GpuMaterial>,
         pub gpu_lights: GpuBuffer<GpuLight>,
         pub gpu_foldings: GpuBuffer<GpuSpaceFolding>,
+
+        pub active_camera: Option<Entity>,
+        pub cam_bufs: Option<CameraBuffers>,
     }
 
     impl World{
@@ -240,29 +273,60 @@ pub mod ecs {
     
                 spawned_entities: vec![],
                 entities_to_remove_from_gpu: vec![],
-    
+                
+                cameras: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
                 sdf_bases: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
                 materials: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
                 lights: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
                 space_foldings: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
                 transforms: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
                 rotatings: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
-                cameras: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
                 velocities: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
                 colliders: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
-    
+                
+                camera_gpu_indices: GpuIndexMap::new(),
                 sdf_gpu_indices: GpuIndexMap::new(),
                 material_gpu_indices: GpuIndexMap::new(),
                 light_gpu_indices: GpuIndexMap::new(),
                 folding_gpu_indices: GpuIndexMap::new(),
-    
+                
+                gpu_cameras:     GpuBuffer::<GpuCamera>::new(2)?,
+                cam_bufs: None,
+
                 gpu_sdf_objects: GpuBuffer::<GpuSdfObjectBase>::new(8)?,
                 gpu_materials:   GpuBuffer::<GpuMaterial>::new(8)?,
                 gpu_lights:      GpuBuffer::<GpuLight>::new(8)?,
                 gpu_foldings:    GpuBuffer::<GpuSpaceFolding>::new(8)?,
+
+                active_camera: None,
             })
         }
-
+        pub fn insert_camera(
+            &mut self,
+            e: Entity,
+            cam: Camera,
+            cuda: &CudaContext,
+        ) -> Result<(), Box<dyn Error>> {
+            self.cameras.insert(e, cam);
+    
+            // allocate CameraBuffer
+            if self.cam_bufs.is_none() {
+                self.cam_bufs = Some(CameraBuffers::new(cuda, cam.width, cam.height)?);
+            }
+            Ok(())
+        }
+        pub fn active_camera(&mut self, e: Entity){
+            self.active_camera = Some(e);
+        }
+        pub fn active_camera_index(&self) -> usize {
+            let ent = self.active_camera.expect("no active camera");
+            self.camera_gpu_indices
+                .get(ent)
+                .expect("GPU slot not allocated")
+        }
+        pub fn get_camera(&self, e: Entity) -> Option<&Camera> {
+            self.cameras.get(e)
+        }
         pub fn insert_sdf_base(&mut self, e: Entity, sdf: SdfBase) {
             self.sdf_bases.insert(e, sdf);
         }
@@ -280,9 +344,6 @@ pub mod ecs {
         }
         pub fn insert_rotating(&mut self, e: Entity, r: Rotating) {
             self.rotatings.insert(e, r);
-        }
-        pub fn insert_camera(&mut self, e: Entity, c: Camera) {
-            self.cameras.insert(e, c);
         }
 
         pub fn spawn(&mut self) -> Entity {
@@ -309,41 +370,6 @@ pub mod ecs {
     
             // schedule GPU removal
             self.entities_to_remove_from_gpu.push(e.index);
-        }
-
-        pub fn choose_camera(&self, camera_name: &str) -> Result<CameraObject, Box<dyn Error>> {
-
-            for (camera, e_idx) in self.cameras.iter() {
-                if camera.name == camera_name {
-                    let gen = self.gens.get(e_idx as usize).copied().unwrap_or(0);
-                    let e = Entity { index: e_idx, generation: gen };
-
-                    if let Some(tr) = self.transforms.get(e) {
-                        let rot = tr.rotation;
-                        let camera_to_render = CameraObject::new(
-                            tr.position,            // position
-                            rot * Vec3::X,          // u (right)
-                            rot * Vec3::Y,          // v (up)
-                            rot * (Vec3::Z*-1.0),   // w (forward)
-                            camera.field_of_view,
-                            camera.width,
-                            camera.height,
-                            camera.aperture,
-                            camera.focus_distance
-                        );
-
-                        return Ok(camera_to_render)
-                    }
-                    else {
-                        let msg = "no camera transform: cannot define the position and rotation (ecs)";
-                        return Err(Box::from(format!("{}", msg)))
-                    }
-                }
-            }
-            
-            let msg = "no camera under that name or no camera defined (ecs)";
-            return Err(Box::from(format!("{}", msg)))
-            
         }
 
         // Full initial upload: builds all GPU-side counterparts from existing host components.
@@ -379,8 +405,13 @@ pub mod ecs {
                     self.light_gpu_indices.free_for(e);
                     scene_updated = true;
                 }
+                if let Some(_camera) = self.camera_gpu_indices.get(e) {
+                    self.camera_gpu_indices.free_for(e);
+                    scene_updated = true;
+                }
 
                 // remove host components
+                self.cameras.remove(e);
                 self.transforms.remove(e);
                 self.sdf_bases.remove(e);
                 self.materials.remove(e);
@@ -390,6 +421,60 @@ pub mod ecs {
                 self.cameras.remove(e);
                 self.velocities.remove(e);
                 self.colliders.remove(e);
+            }
+
+            // Sync Camera:
+            // Gather entities whose camera needs a refresh
+            let mut to_update_cam: HashSet<u32> = HashSet::new();
+
+            //   – camera component itself was edited/inserted
+            for (_c, idx) in self.cameras.iter_dirty() {
+                to_update_cam.insert(idx);
+            }
+            //   – transform changed AND the entity owns a camera
+            for (_tr, idx) in self.transforms.iter_dirty() {
+                if self.cameras.contains(idx as usize) {
+                    to_update_cam.insert(idx);
+                }
+            }
+
+            // Build / upload the GPU-side camera structs
+            if let Some(bufs) = &self.cam_bufs {
+                for idx in to_update_cam {
+                    let e = Entity { index: idx,
+                                    generation: self.gens[idx as usize] };
+
+                    // CPU components we need
+                    let cam  = match self.cameras .get(e) { Some(c) => c, None => continue };
+                    let tr   = match self.transforms.get(e) { Some(t) => t, None => continue };
+
+                    // Allocate/reuse slot
+                    let gpu_slot = self.camera_gpu_indices.get_or_allocate_for(e);
+
+                    // Build GPU representation
+                    let gpu_cam = GpuCamera {
+                        position: tr.position,
+                        u:  tr.rotation * Vec3::X,
+                        v:  tr.rotation * Vec3::Y,
+                        w:  tr.rotation * (Vec3::Z * -1.0),   // forward
+                        aperture:        cam.aperture,
+                        focus_dist:      cam.focus_distance,
+                        viewport_width:  cam.viewport_width,
+                        viewport_height: cam.viewport_height,
+                        rand_states: bufs.rand_states,
+                        origins:     bufs.origins,
+                        directions:  bufs.directions,
+                        accum:       bufs.accum,
+                        image:       bufs.image,
+                        spp:    cam.spp,
+                        width:  cam.width,
+                        height: cam.height,
+                        rand_seed_init_count: 0,
+                    };
+
+                    self.gpu_cameras.push(gpu_slot, &gpu_cam)?;
+                    scene_updated = true;
+                }
             }
         
             // 2. Sync space foldings (dirty or new)
@@ -492,6 +577,7 @@ pub mod ecs {
             }
         
             // 6. Clear dirty flags
+            self.cameras.clear_dirty_flags(); 
             self.space_foldings.clear_dirty_flags();
             self.materials.clear_dirty_flags();
             self.lights.clear_dirty_flags();

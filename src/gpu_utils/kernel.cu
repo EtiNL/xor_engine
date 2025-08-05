@@ -78,13 +78,50 @@ struct Vec3 {
     }
 };
 
-struct Camera {
-    Vec3 position;
-    Vec3 u, v, w;       // camera basis
+struct Image_ray_accum {
+    int* ray_per_pixel;
+    unsigned char* image;
+};
+
+__device__ void accumulate(Image_ray_accum* acc,
+                           const Vec3& color,
+                           int pixel_idx)
+{
+    int rpp      = acc->ray_per_pixel[pixel_idx]; 
+    int new_rpp  = rpp + 1;
+    int base     = 3 * pixel_idx;
+
+    acc->image[base + 0] =
+        (acc->image[base + 0] * rpp + color.x * 255.0f) / new_rpp;
+    acc->image[base + 1] =
+        (acc->image[base + 1] * rpp + color.y * 255.0f) / new_rpp;
+    acc->image[base + 2] =
+        (acc->image[base + 2] * rpp + color.z * 255.0f) / new_rpp;
+
+    acc->ray_per_pixel[pixel_idx] = new_rpp;
+}
+
+struct GpuCamera {
+    /* intrinsics / pose */
+    Vec3  position, u, v, w;
     float aperture;
     float focus_dist;
     float viewport_width;
     float viewport_height;
+
+    /* buffers */
+    curandState*     rand_states;   // nullptr when aperture == 0
+    float*           origins;
+    float*           directions;
+    Image_ray_accum  accum;         // .ray_per_pixel may be nullptr
+    unsigned char*   image;
+
+    /* misc */
+    unsigned int spp;
+    unsigned int width;
+    unsigned int height;
+    
+    unsigned int rand_seed_init_count;
 };
 
 enum SdfType {
@@ -132,46 +169,11 @@ struct GpuSpaceFolding {
     Mat3   lattice_basis_inv;
 };
 
-
-struct Image_ray_accum {
-    int* ray_per_pixel;
-    unsigned char* image;
-};
-
-__device__ void accumulate(Image_ray_accum* acc,
-                           const Vec3& color,
-                           int pixel_idx)
-{
-    int rpp      = acc->ray_per_pixel[pixel_idx]; 
-    int new_rpp  = rpp + 1;
-    int base     = 3 * pixel_idx;
-
-    acc->image[base + 0] =
-        (acc->image[base + 0] * rpp + color.x * 255.0f) / new_rpp;
-    acc->image[base + 1] =
-        (acc->image[base + 1] * rpp + color.y * 255.0f) / new_rpp;
-    acc->image[base + 2] =
-        (acc->image[base + 2] * rpp + color.z * 255.0f) / new_rpp;
-
-    acc->ray_per_pixel[pixel_idx] = new_rpp;
-}
-
 extern "C"
 __global__ void reset_accum(int* ray_per_pixel, int total_pixels) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < total_pixels) {
         ray_per_pixel[i] = 0;
-    }
-}
-
-extern "C"
-__global__ void init_random_states(curandState *rand_states, int width, int height, unsigned int seed) {
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
-    int i = y * width + x;
-
-    if (x < width && y < height) {
-        curand_init(seed, i, 0, &rand_states[i]);
     }
 }
 
@@ -185,52 +187,67 @@ __device__ Vec3 random_in_unit_disk(curandState* rand_state) {
 }
 
 extern "C" __global__
-void generate_rays(int width, int height, Camera* cam_ptr, curandState *rand_states, float* origins, float* directions) {
-    Camera cam = *cam_ptr;
-
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
-    int i = y * width + x;
-
+void generate_rays(int width, int height, GpuCamera* cameras, int camera_index)
+{   
+    GpuCamera& cam = cameras[camera_index];
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    const int i = y * width + x;
     if (x >= width || y >= height) return;
 
-    // For floating-point calculations
-    float u = (x + 0.5f) / width * 2.0f - 1.0f;
-    float v = 1.0f - ((y + 0.5f) / height) * 2.0f;
+    /* ----- camera-space ray dir ------------------------------------------------ */
+    const float u = (x + 0.5f) / width  * 2.0f - 1.0f;
+    const float v = 1.0f - (y + 0.5f) / height * 2.0f;
 
-    Vec3 dir_camera = Vec3(
-        u * cam.viewport_width * 0.5f,
+    Vec3 dir_cam(
+        u * cam.viewport_width  * 0.5f,
         v * cam.viewport_height * 0.5f,
-        1.0f
-    ).normalize();
+        1.0f);
+    dir_cam = dir_cam.normalize();
 
-    Vec3 dir_world = cam.u * dir_camera.x + cam.v * dir_camera.y + cam.w * dir_camera.z;
+    Vec3 dir_world = cam.u * dir_cam.x + cam.v * dir_cam.y + cam.w * dir_cam.z;
     Vec3 origin, direction;
 
-    curandState local_rand = rand_states[i];
+    /* ----- depth of field ------------------------------------------------------ */
+    if (cam.aperture > 0.0f)
+    {
+        // one-time RNG setup per pixel
+        if (i >= cam.rand_seed_init_count)
+        {
+            curand_init(42u,            /* seed  */
+                        i,              /* sequence */
+                        0u,             /* offset  */
+                        &cam.rand_states[i]);
 
-    if (cam.aperture > 0.0f) {
-        float lens_radius = cam.aperture * 0.5f;
-        Vec3 rd = random_in_unit_disk(&local_rand) * lens_radius;
-        Vec3 offset = cam.u * rd.x + cam.v * rd.y;
-        origin = cam.position + offset;
-        Vec3 focal_point = cam.position + dir_world * cam.focus_dist;
-        direction = (focal_point - origin).normalize();
+            /* SAFELY bump the counter in global memory */
+            atomicAdd(&cam.rand_seed_init_count, 1u);
+        }
 
-        rand_states[i] = local_rand;
+        curandState local = cam.rand_states[i];
+        const float lens_r = cam.aperture * 0.5f;
+        Vec3  rd = random_in_unit_disk(&local) * lens_r;
+        Vec3  offset = cam.u * rd.x + cam.v * rd.y;
 
-    } else {
-        origin = cam.position;
-        direction = dir_world.normalize();
+        origin    = cam.position + offset;
+        Vec3 fp   = cam.position + dir_world * cam.focus_dist;
+        direction = (fp - origin).normalize();
+
+        cam.rand_states[i] = local;            // write back
+    }
+    else
+    {
+        origin    = cam.position;
+        direction = dir_world;                 // already unit length
     }
 
-    origins[i * 3 + 0] = origin.x;
-    origins[i * 3 + 1] = origin.y;
-    origins[i * 3 + 2] = origin.z;
+    /* ----- store ---------------------------------------------------------------- */
+    cam.origins   [3*i + 0] = origin.x;
+    cam.origins   [3*i + 1] = origin.y;
+    cam.origins   [3*i + 2] = origin.z;
 
-    directions[i * 3 + 0] = direction.x;
-    directions[i * 3 + 1] = direction.y;
-    directions[i * 3 + 2] = direction.z;
+    cam.directions[3*i + 0] = direction.x;
+    cam.directions[3*i + 1] = direction.y;
+    cam.directions[3*i + 2] = direction.z;
 }
 
 __device__ float sdf_sphere(Vec3 sphere_center, float radius, Vec3 ray_point) {
@@ -384,29 +401,30 @@ __device__ Vec3 obj_mapping(
 extern "C" __global__
 void raymarch(
     int width, int height,
-    const float* origins,
-    const float* directions,
+    GpuCamera* cameras,
+    int camera_index,
     const GpuSdfObjectBase* sdf_objs,
     int num_objs,
     const GpuMaterial* materials,
     const GpuLight* lights,
-    const GpuSpaceFolding* foldings,
-    Image_ray_accum* accum
+    const GpuSpaceFolding* foldings
 ) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
     int i = y * width + x;
     if (x >= width || y >= height) return;
 
+    GpuCamera& cam = cameras[camera_index];
+
     Vec3 origin(
-        origins[i*3 + 0],
-        origins[i*3 + 1],
-        origins[i*3 + 2]
+        cam.origins[i*3 + 0],
+        cam.origins[i*3 + 1],
+        cam.origins[i*3 + 2]
     );
     Vec3 dir(
-        directions[i*3 + 0],
-        directions[i*3 + 1],
-        directions[i*3 + 2]
+        cam.directions[i*3 + 0],
+        cam.directions[i*3 + 1],
+        cam.directions[i*3 + 2]
     );
 
     Vec3 p = origin;
@@ -502,8 +520,14 @@ void raymarch(
         float lam = fmaxf(0.0f, Vec3::dot(normal, L));
         color = color*lam;
     }
-
-    accumulate(accum, color, i);
+    if (cam.spp > 1) {
+        accumulate(&cam.accum, color, i);
+    }
+    else {
+        cam.image[i*3 + 0] = color.x * 255.0f;
+        cam.image[i*3 + 1] = color.y * 255.0f;
+        cam.image[i*3 + 2] = color.z * 255.0f;
+    }
 }
 
 

@@ -7,51 +7,31 @@ pub mod ecs_gpu_interface {
     use crate::cuda_wrapper::CudaContext;
     use crate::ecs::ecs::Entity;
 
-
     #[repr(C)]
-    #[derive(Clone, Copy, Debug)]
-    pub struct CameraObject {
-        pub position: Vec3,
-        pub u: Vec3,
-        pub v: Vec3,
-        pub w: Vec3,
-        pub aperture: f32,
-        pub focus_dist: f32,
-        pub viewport_width: f32,
+    #[derive(Clone, Copy, Default)]
+    pub struct GpuCamera {
+        /* ── camera intrinsics / pose ───────────────────────────── */
+        pub position:        Vec3,
+        pub u:               Vec3,
+        pub v:               Vec3,
+        pub w:               Vec3,
+        pub aperture:        f32,
+        pub focus_dist:      f32,
+        pub viewport_width:  f32,
         pub viewport_height: f32,
 
-    }
+        /* ── image & ray buffers ────────────────────────────────── */
+        pub rand_states: CUdeviceptr,          // 0 when aperture == 0
+        pub origins:     CUdeviceptr,          // float3 * W*H
+        pub directions:  CUdeviceptr,          // float3 * W*H
+        pub accum:       CUdeviceptr,          // 0 when aperture == 0
+        pub image:       CUdeviceptr,
 
-    impl CameraObject {
-        pub fn new(
-            position: Vec3,
-            u: Vec3,
-            v: Vec3,
-            w: Vec3,
-            fov: f32,
-            width: u32,
-            height: u32,
-            aperture: f32,
-            focus_dist: f32,
-        ) -> Self {
-            let aspect_ratio = width as f32 / height as f32;
-
-            // Champ de vision vertical → taille plan image
-            let theta = fov.to_radians();
-            let viewport_height = 2.0 * (theta / 2.0).tan();
-            let viewport_width = aspect_ratio * viewport_height;
-
-            Self {
-                position,
-                u,
-                v,
-                w,
-                aperture,
-                focus_dist,
-                viewport_width,
-                viewport_height,
-            }
-        }
+        /* ── misc ───────────────────────────────────────────────── */
+        pub spp:    u32,
+        pub width:  u32,
+        pub height: u32,
+        pub rand_seed_init_count: u32,
     }
 
     #[derive(Clone, Copy, Debug)]
