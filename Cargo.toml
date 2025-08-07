@@ -1,16 +1,28 @@
 [package]
-name = "xor_engine"
-version = "0.1.0"
-edition = "2021"
-default-run = "xor_engine"
+name         = "xor_engine"
+version      = "0.1.0"
+edition      = "2021"
+default-run  = "xor_engine"
 
 [dependencies]
-sdl2 = {version = "0.34.5" , default-features = false, features = ["ttf"]}
-cuda-driver-sys = "0.3.0"
-rand = "0.8"
-cust = "0.3.2"
-image = "0.25"
-memoffset = "0.9"
+sdl2             = { version = "0.34.5", default-features = false, features = ["ttf"] }
+cuda-driver-sys  = "0.3.0"
+rand             = "0.8"
+cust             = "0.3.2"
+image            = "0.25"
+memoffset        = "0.9"
 
 [build-dependencies]
 cc = "1.0"
+
+# ───────────── optional feature that tells build.rs to add -G ─────────────
+[features]
+gpu_mem_check = []           # compile with:  cargo run --features gpu_mem_check
+
+# ───────────── keep DWARF symbols for all builds ─────────────
+[profile.dev]
+debug            = true
+overflow-checks  = true         # (unchanged)
+
+[profile.release]
+debug            = true         # keep symbols even in release

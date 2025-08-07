@@ -83,22 +83,22 @@ struct Image_ray_accum {
     unsigned char* image;
 };
 
-__device__ void accumulate(Image_ray_accum* acc,
+__device__ void accumulate(Image_ray_accum& acc,
                            const Vec3& color,
                            int pixel_idx)
 {
-    int rpp      = acc->ray_per_pixel[pixel_idx]; 
+    int rpp      = acc.ray_per_pixel[pixel_idx]; 
     int new_rpp  = rpp + 1;
     int base     = 3 * pixel_idx;
 
-    acc->image[base + 0] =
-        (acc->image[base + 0] * rpp + color.x * 255.0f) / new_rpp;
-    acc->image[base + 1] =
-        (acc->image[base + 1] * rpp + color.y * 255.0f) / new_rpp;
-    acc->image[base + 2] =
-        (acc->image[base + 2] * rpp + color.z * 255.0f) / new_rpp;
+    acc.image[base + 0] =
+        (acc.image[base + 0] * rpp + color.x * 255.0f) / new_rpp;
+    acc.image[base + 1] =
+        (acc.image[base + 1] * rpp + color.y * 255.0f) / new_rpp;
+    acc.image[base + 2] =
+        (acc.image[base + 2] * rpp + color.z * 255.0f) / new_rpp;
 
-    acc->ray_per_pixel[pixel_idx] = new_rpp;
+    acc.ray_per_pixel[pixel_idx] = new_rpp;
 }
 
 struct GpuCamera {
@@ -212,8 +212,8 @@ void generate_rays(int width, int height, GpuCamera* cameras, int camera_index)
     if (cam.aperture > 0.0f)
     {
         // one-time RNG setup per pixel
-        if (i >= cam.rand_seed_init_count)
-        {
+        if (cam.rand_seed_init_count < width*height)
+        {   
             curand_init(42u,            /* seed  */
                         i,              /* sequence */
                         0u,             /* offset  */
@@ -505,28 +505,30 @@ void raymarch(
             Vec3 kf( roundf(lc.x), roundf(lc.y), roundf(lc.z) );
             eval.center = eval.center + kf * fold.lattice_basis;
         }
+        if (eval.material_id != INVALID_TEXTURE) {
+            
+            const GpuMaterial& mat = materials[ eval.material_id ];
+            // normal
+            Vec3 normal = evaluate_grad_sdf(eval, p) * -1.0f;
 
-        const GpuMaterial& mat = materials[ eval.material_id ];
-        // normal
-        Vec3 normal = evaluate_grad_sdf(eval, p) * -1.0f;
+            if (mat.use_texture) {
+                color = obj_mapping(mat, eval, p);
+            } else {
+                color = Vec3(mat.color[0], mat.color[1], mat.color[2]);
+            }
 
-        if (mat.use_texture) {
-            color = obj_mapping(mat, eval, p);
-        } else {
-            color = Vec3(mat.color[0], mat.color[1], mat.color[2]);
+            Vec3 L = Vec3(0.5f,1.0f,-0.6f).normalize();
+            float lam = fmaxf(0.0f, Vec3::dot(normal, L));
+            color = color*lam;
+            if (cam.spp > 1) {
+                accumulate(cam.accum, color, i);
+            }
+            else {
+                cam.image[i*3 + 0] = color.x * 255.0f;
+                cam.image[i*3 + 1] = color.y * 255.0f;
+                cam.image[i*3 + 2] = color.z * 255.0f;
+            }
         }
-
-        Vec3 L = Vec3(0.5f,1.0f,-0.6f).normalize();
-        float lam = fmaxf(0.0f, Vec3::dot(normal, L));
-        color = color*lam;
-    }
-    if (cam.spp > 1) {
-        accumulate(&cam.accum, color, i);
-    }
-    else {
-        cam.image[i*3 + 0] = color.x * 255.0f;
-        cam.image[i*3 + 1] = color.y * 255.0f;
-        cam.image[i*3 + 2] = color.z * 255.0f;
     }
 }
 

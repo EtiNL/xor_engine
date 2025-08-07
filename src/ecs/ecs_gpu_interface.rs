@@ -7,6 +7,14 @@ pub mod ecs_gpu_interface {
     use crate::cuda_wrapper::CudaContext;
     use crate::ecs::ecs::Entity;
 
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct ImageRayAccum {
+        pub ray_per_pixel: CUdeviceptr,
+        pub image: CUdeviceptr,
+    }
+
     #[repr(C)]
     #[derive(Clone, Copy, Default)]
     pub struct GpuCamera {
@@ -24,7 +32,7 @@ pub mod ecs_gpu_interface {
         pub rand_states: CUdeviceptr,          // 0 when aperture == 0
         pub origins:     CUdeviceptr,          // float3 * W*H
         pub directions:  CUdeviceptr,          // float3 * W*H
-        pub accum:       CUdeviceptr,          // 0 when aperture == 0
+        pub accum:       ImageRayAccum,
         pub image:       CUdeviceptr,
 
         /* ── misc ───────────────────────────────────────────────── */

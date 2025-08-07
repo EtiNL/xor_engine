@@ -15,7 +15,7 @@ pub mod ecs {
         GpuCamera, SdfType, sdf_type_translation,
         GpuIndexMap, TextureManager, TextureHandle,
         GpuSdfObjectBase, GpuMaterial, GpuLight, GpuSpaceFolding,
-        INVALID_MATERIAL, INVALID_LIGHT, INVALID_FOLDING,
+        INVALID_MATERIAL, INVALID_LIGHT, INVALID_FOLDING, ImageRayAccum
     };
     use crate::cuda_wrapper::{GpuBuffer, CameraBuffers, CudaContext};
     use crate::ecs::math_op::math_op::{Vec3, Quat, Mat3};
@@ -451,6 +451,11 @@ pub mod ecs {
                     // Allocate/reuse slot
                     let gpu_slot = self.camera_gpu_indices.get_or_allocate_for(e);
 
+                    let accum = ImageRayAccum { 
+                        ray_per_pixel: bufs.ray_per_pixel, 
+                        image: bufs.image 
+                    };
+
                     // Build GPU representation
                     let gpu_cam = GpuCamera {
                         position: tr.position,
@@ -464,7 +469,7 @@ pub mod ecs {
                         rand_states: bufs.rand_states,
                         origins:     bufs.origins,
                         directions:  bufs.directions,
-                        accum:       bufs.accum,
+                        accum:       accum,
                         image:       bufs.image,
                         spp:    cam.spp,
                         width:  cam.width,

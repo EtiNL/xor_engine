@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use std::path::Path;
 use cuda_driver_sys::cuGraphAddDependencies;
+use cuda_driver_sys::CUdeviceptr;
 
 use display::{Display, FpsCounter};
 use cuda_wrapper::{CudaContext, dim3, CameraBuffers};
@@ -31,9 +32,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let width: u32 = 800;
     let height: u32 = 600;
-    let sample_per_pixel: u32 = 8;
+    let sample_per_pixel: u32 = 1;
     let field_of_view: f32 = 45.0;
-    let aperture: f32  = 0.0;
+    let aperture: f32  = 0.1;
     let focus_distance: f32 = 10.0;
 
     let cam_ent = world.spawn();
@@ -90,7 +91,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         use_texture: true,
     });
     // Lattice‐folding
-    world.insert_space_folding(sphere_ent, SpaceFolding::new(Mat3::Id * 10.0));
+    // world.insert_space_folding(sphere_ent, SpaceFolding::new(Mat3::Id * 10.0));
     // Rotation
     world.insert_rotating(sphere_ent, Rotating {
         speed_deg_per_sec: 30.0,
@@ -131,49 +132,39 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Create a CUDA graph
     let mut graph = cuda_context.create_cuda_graph()?;
 
-    let camera_ptr   = world.gpu_cameras.ptr();
-    let active_camera_index: usize = world.active_camera_index();
+    let mut cam_ptr       : CUdeviceptr = world.gpu_cameras.ptr();
+    let mut cam_index : u32         = world.active_camera_index() as u32;
 
-    let params_generate_rays: Vec<*const c_void> = vec![
-        &width as *const _ as *const c_void,
-        &height as *const _ as *const c_void,
-        &camera_ptr as *const _ as *const c_void,
-        &active_camera_index as *const _ as *const c_void,
+    let mut sdf_ptr       : CUdeviceptr = world.gpu_sdf_objects.ptr();
+    let mut num_sdfs  : u32         = world.gpu_sdf_objects.len as u32;
+
+    let mut mat_ptr       : CUdeviceptr = world.gpu_materials.ptr();
+    let mut light_ptr     : CUdeviceptr = world.gpu_lights.ptr();
+    let mut fold_ptr      : CUdeviceptr = world.gpu_foldings.ptr();
+
+    let params_generate_rays: [*const c_void; 4] = [
+        &width   as *const _ as *const c_void,
+        &height  as *const _ as *const c_void,
+        &cam_ptr     as *const _ as *const c_void,
+        &cam_index as *const _ as *const c_void,
     ];
-    
-    cuda_context.add_graph_kernel_node(
-        &mut graph,
-        "generate_rays",
-        &params_generate_rays,
-        grid_dim,
-        block_dim,
-    )?;
 
-    let sdf_ptr   = world.gpu_sdf_objects.ptr();
-    let num_sdfs  = world.gpu_sdf_objects.len as i32;
-    let mat_ptr   = world.gpu_materials  .ptr();
-    let light_ptr = world.gpu_lights     .ptr();
-    let fold_ptr  = world.gpu_foldings   .ptr();
-
-    let params_raymarch = vec![
-        &width       as *const _ as *const c_void,
-        &height      as *const _ as *const c_void,
-        &camera_ptr as *const _ as *const c_void,
-        &active_camera_index as *const _ as *const c_void,
-        &sdf_ptr     as *const _ as *const c_void,
-        &num_sdfs    as *const _ as *const c_void,
-        &mat_ptr     as *const _ as *const c_void,
-        &light_ptr   as *const _ as *const c_void,
-        &fold_ptr    as *const _ as *const c_void,
+    let params_raymarch: [*const c_void; 9] = [
+        &width   as *const _ as *const c_void,
+        &height  as *const _ as *const c_void,
+        &cam_ptr      as *const _ as *const c_void,
+        &cam_index as *const _ as *const c_void,
+        &sdf_ptr      as *const _ as *const c_void,
+        &num_sdfs as *const _ as *const c_void,
+        &mat_ptr      as *const _ as *const c_void,
+        &light_ptr    as *const _ as *const c_void,
+        &fold_ptr     as *const _ as *const c_void,
     ];
 
     cuda_context.add_graph_kernel_node(
-        &mut graph,
-        "raymarch",
-        &params_raymarch,
-        grid_dim,
-        block_dim,
-    )?;
+        &mut graph, "generate_rays", &params_generate_rays[..], grid_dim, block_dim)?;
+    cuda_context.add_graph_kernel_node(
+        &mut graph, "raymarch",      &params_raymarch[..],      grid_dim, block_dim)?;
 
     // Instantiate the CUDA graph
     let graph_exec = cuda_context.instantiate_graph(graph)?;
@@ -262,28 +253,22 @@ fn main() -> Result<(), Box<dyn Error>> {
         if first_image || world.update_scene(&mut tex_mgr)? {
 
             if !first_image {
-                let sdf_ptr   = world.gpu_sdf_objects.ptr();
-                let num_sdfs  = world.gpu_sdf_objects.len as i32;
-                let mat_ptr   = world.gpu_materials  .ptr();
-                let light_ptr = world.gpu_lights     .ptr();
-                let fold_ptr  = world.gpu_foldings   .ptr();
+                cam_ptr       = world.gpu_cameras.ptr();
+                cam_index = world.active_camera_index() as u32;
 
-                let params_raymarch = vec![
-                    &width       as *const _ as *const c_void,
-                    &height      as *const _ as *const c_void,
-                    &camera_ptr as *const _ as *const c_void,
-                    &active_camera_index as *const _ as *const c_void,
-                    &sdf_ptr     as *const _ as *const c_void,
-                    &num_sdfs    as *const _ as *const c_void,
-                    &mat_ptr     as *const _ as *const c_void,
-                    &light_ptr   as *const _ as *const c_void,
-                    &fold_ptr    as *const _ as *const c_void,
-                ];
+                sdf_ptr       = world.gpu_sdf_objects.ptr();
+                num_sdfs  = world.gpu_sdf_objects.len as u32;
+
+                mat_ptr       = world.gpu_materials.ptr();
+                light_ptr     = world.gpu_lights.ptr();
+                fold_ptr      = world.gpu_foldings.ptr();
+
+
+                /* ---------- re-apply the same pointer arrays ---------- */
                 cuda_context.exec_kernel_node_set_params(
-                    graph_exec,
-                    "raymarch",
-                    &params_raymarch,
-                )?;
+                        graph_exec, "generate_rays", &params_generate_rays[..])?;
+                cuda_context.exec_kernel_node_set_params(
+                        graph_exec, "raymarch",      &params_raymarch[..])?;
             }
 
             // Launch the graph
