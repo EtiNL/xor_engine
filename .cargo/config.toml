@@ -1,0 +1,20 @@
+[target.x86_64-unknown-linux-gnu]
+rustflags = [
+  "-C", "link-arg=-rdynamic",
+  "-C", "target-cpu=native"
+]
+
+[alias]
+gpu-mem-check = [
+  "run",
+  "--features", "gpu_mem_check",
+  "--config",
+  "target.x86_64-unknown-linux-gnu.runner=\"compute-sanitizer --tool memcheck --error-exitcode 1 --require-cuda-init yes\"",
+]
+
+gpu-nsys = [
+  "run",
+  "--release",
+  "--config",
+  "target.x86_64-unknown-linux-gnu.runner=\"nsys profile --force-overwrite=true --stats=true --sample=cpu --trace=cuda,nvtx,osrt -o profiles/latest\"",
+]
