@@ -7,7 +7,7 @@ use sdl2::keyboard::Keycode;
 use std::error::Error;
 use std::ffi::c_void;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Instant, Duration};
 use std::path::Path;
 use cuda_driver_sys::cuGraphAddDependencies;
 use cuda_driver_sys::CUdeviceptr;
@@ -34,7 +34,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let height: u32 = 600;
     let sample_per_pixel: u32 = 1;
     let field_of_view: f32 = 45.0;
-    let aperture: f32  = 0.1;
+    let aperture: f32  = 0.0;
     let focus_distance: f32 = 10.0;
 
     world.insert_camera(
@@ -90,7 +90,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         use_texture: true,
     });
     // Lattice‐folding
-    // world.insert_space_folding(sphere_ent, SpaceFolding::new(Mat3::Id * 10.0));
+    world.insert_space_folding(sphere_ent, SpaceFolding::new(Mat3::Id * 10.0));
     // Rotation
     world.insert_rotating(sphere_ent, Rotating {
         speed_deg_per_sec: 30.0,
@@ -270,13 +270,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         graph_exec, "raymarch",      &params_raymarch[..])?;
             }
 
-            // Launch the graph
-            cuda_context.launch_graph(graph_exec)?;
-            CudaContext::synchronize();
-
-            let cam_host = world.get_camera(cam_ent).unwrap();
-            let spp = cam_host.spp;
-            for _ in 0..spp {
+            for _ in 0..sample_per_pixel {
                 cuda_context.launch_graph(graph_exec)?;
             }
 
@@ -287,7 +281,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 let cb = world.cam_bufs.as_ref().expect("camera buffers not set");
                 cuda_context.retrieve_tensor(cb.image, &mut host_img, img_size)?;
             
-                if spp > 1 {
+                if sample_per_pixel > 1 {
 
                     let total_pixels   = (width * height) as usize;
                     let d_ray_per_pixel = cb.ray_per_pixel; // CUdeviceptr

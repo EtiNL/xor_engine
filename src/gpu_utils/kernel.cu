@@ -530,6 +530,11 @@ void raymarch(
             }
         }
     }
+    else {
+                cam.image[i*3 + 0] = color.x * 255.0f;
+                cam.image[i*3 + 1] = color.y * 255.0f;
+                cam.image[i*3 + 2] = color.z * 255.0f;
+    }
 }
 
 
