@@ -418,7 +418,6 @@ pub mod ecs {
                 self.space_foldings.remove(e);
                 self.lights.remove(e);
                 self.rotatings.remove(e);
-                self.cameras.remove(e);
                 self.velocities.remove(e);
                 self.colliders.remove(e);
             }

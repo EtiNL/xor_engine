@@ -37,7 +37,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let aperture: f32  = 0.1;
     let focus_distance: f32 = 10.0;
 
-    let cam_ent = world.spawn();
     world.insert_camera(
             cam_ent,
             Camera::new(field_of_view, width, height, aperture, focus_distance, sample_per_pixel),

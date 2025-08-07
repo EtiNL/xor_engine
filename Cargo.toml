@@ -15,14 +15,25 @@ memoffset        = "0.9"
 [build-dependencies]
 cc = "1.0"
 
-# ───────────── optional feature that tells build.rs to add -G ─────────────
+# ───────────── features ─────────────
 [features]
-gpu_mem_check = []           # compile with:  cargo run --features gpu_mem_check
+default        = ["fast_math"]   # fastest by default for cargo run
+gpu_mem_check  = []              # cargo gpu-mem-check keeps using this
+fast_math      = []              # toggles NVCC --use_fast_math in build.rs
 
-# ───────────── keep DWARF symbols for all builds ─────────────
+# ───────────── tuned profiles ─────────────
 [profile.dev]
-debug            = true
-overflow-checks  = true         # (unchanged)
+opt-level        = 3
+lto              = "thin"
+codegen-units    = 1
+debug            = 0
+debug-assertions = false
+overflow-checks  = false
+panic            = "abort"
 
 [profile.release]
-debug            = true         # keep symbols even in release
+opt-level        = 3
+lto              = "thin"
+codegen-units    = 1
+panic            = "abort"
+debug            = 1   # keep minimal DWARF for better nsys symbols
