@@ -17,7 +17,7 @@ cc = "1.0"
 
 # ───────────── features ─────────────
 [features]
-default        = ["fast_math"]   # fastest by default for cargo run
+default        = []   #"fast_math" for fastest by default for cargo run
 gpu_mem_check  = []              # cargo gpu-mem-check keeps using this
 fast_math      = []              # toggles NVCC --use_fast_math in build.rs
 
