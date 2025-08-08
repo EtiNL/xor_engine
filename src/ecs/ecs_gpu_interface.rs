@@ -135,12 +135,14 @@ pub mod ecs_gpu_interface {
     pub struct GpuSpaceFolding {
         pub lattice_basis: Mat3,
         pub lattice_basis_inv: Mat3,
+        pub min_half_thickness: f32,
     }
     impl Default for GpuSpaceFolding {
         fn default() -> Self {
             GpuSpaceFolding {
                 lattice_basis: Mat3::Zero,
                 lattice_basis_inv: Mat3::Zero,
+                min_half_thickness: 0.0,
             }
         }
     }

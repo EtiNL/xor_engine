@@ -104,11 +104,27 @@ pub mod ecs {
     pub struct SpaceFolding {
         pub lattice_basis: Mat3,
         pub lattice_basis_inv: Mat3, 
+        pub min_half_thickness: f32,
     }
     impl SpaceFolding {
         pub fn new(lattice_basis: Mat3) -> Self {
-            let lattice_basis_inv: Mat3 = lattice_basis.inv();
-            Self { lattice_basis, lattice_basis_inv }
+            let lattice_basis_inv = lattice_basis.inv();
+    
+            let u_len = (lattice_basis.a11*lattice_basis.a11
+                       + lattice_basis.a21*lattice_basis.a21
+                       + lattice_basis.a31*lattice_basis.a31).sqrt();
+    
+            let v_len = (lattice_basis.a12*lattice_basis.a12
+                       + lattice_basis.a22*lattice_basis.a22
+                       + lattice_basis.a32*lattice_basis.a32).sqrt();
+    
+            let w_len = (lattice_basis.a13*lattice_basis.a13
+                       + lattice_basis.a23*lattice_basis.a23
+                       + lattice_basis.a33*lattice_basis.a33).sqrt();
+    
+            let min_half_thickness = 0.5 * u_len.min(v_len).min(w_len);
+    
+            Self { lattice_basis, lattice_basis_inv, min_half_thickness }
         }
     }
 
@@ -489,6 +505,7 @@ pub mod ecs {
                 let gpu_struct = GpuSpaceFolding {
                     lattice_basis: folding.lattice_basis,
                     lattice_basis_inv: folding.lattice_basis_inv,
+                    min_half_thickness: folding.min_half_thickness,
                 };
                 self.gpu_foldings.push(gpu_slot, &gpu_struct)?;
                 scene_updated = true;

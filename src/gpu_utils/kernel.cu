@@ -167,6 +167,7 @@ struct GpuLight {
 struct GpuSpaceFolding {
     Mat3   lattice_basis;
     Mat3   lattice_basis_inv;
+    float min_half_thickness;
 };
 
 extern "C"
@@ -454,24 +455,21 @@ void raymarch(
 
             // folding?
             unsigned fid = src.lattice_folding_id;
-            float lattice_x=0, lattice_y=0, lattice_z=0;
+            float min_half_thickness = 0.0;
             if (fid != INVALID_FOLDING) {
                 const GpuSpaceFolding& fold = foldings[fid];
                 Vec3 diff = p - eval.center;
                 Vec3 lc   = diff * fold.lattice_basis_inv;
                 Vec3 kf( roundf(lc.x), roundf(lc.y), roundf(lc.z) );
                 eval.center = eval.center + kf * fold.lattice_basis;
-
-                lattice_x = Vec3(fold.lattice_basis.a11, fold.lattice_basis.a21, fold.lattice_basis.a31).length();
-                lattice_y = Vec3(fold.lattice_basis.a12, fold.lattice_basis.a22, fold.lattice_basis.a32).length();
-                lattice_z = Vec3(fold.lattice_basis.a13, fold.lattice_basis.a23, fold.lattice_basis.a33).length();
+                min_half_thickness = fold.min_half_thickness;
             }
 
             float d = evaluate_sdf(eval, p);
             // if inside, push out
             if (d < 0) {
                 float center_dist = (eval.center - p).length();
-                d = fminf(fminf(lattice_x, lattice_y), lattice_z)/2 - center_dist;
+                d = min_half_thickness - center_dist;
             }
 
             if (d < min_dist) {
