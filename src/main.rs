@@ -110,7 +110,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Allows async DtoH memory transfert
     let bytes = (width * height * 3) as usize;
-    let mut host_img: Vec<u8> = vec![0; bytes];
+    // let mut host_img: Vec<u8> = vec![0; bytes];
     let pinned = cuda_context.alloc_pinned(bytes)?;
     let ev_done = cuda_context.create_event()?;
 
@@ -298,9 +298,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
                 cuda_context.event_synchronize(&ev_done)?;
                 // Either copy into your Vec<u8>…
-                host_img.copy_from_slice(pinned.as_bytes());
+                // host_img.copy_from_slice(pinned.as_bytes());
                 // …or render directly from pinned.as_bytes() to SDL if your API allows
-                display.render_texture(&host_img, (width*3) as usize)?;
+                display.render_texture(pinned.as_bytes(), (width*3) as usize)?;
             
                 if sample_per_pixel > 1 {
 
@@ -323,9 +323,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
 
-        // display Image and fps
+        // display fps
         let fps = fps_counter.update();
-        display.render_texture(&host_img, (width * 3) as usize)?;
         display.render_fps(fps)?;
         display.present();
 

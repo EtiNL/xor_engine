@@ -4,6 +4,7 @@ use memoffset::offset_of;
 use std::mem::size_of;
 use std::marker::PhantomData;
 use std::slice;
+use cuda_driver_sys::CUevent_flags_enum::CU_EVENT_DISABLE_TIMING;
 
 
 #[repr(C)]
@@ -334,7 +335,7 @@ impl CudaContext {
     // 2) Create an event
     pub fn create_event(&self) -> Result<CudaEvent, Box<dyn Error>> {
         let mut ev: CUevent = null_mut();
-        unsafe { check_cuda_result(cuEventCreate(&mut ev, 0), "cuEventCreate")?; }
+        unsafe { check_cuda_result(cuEventCreate(&mut ev, CU_EVENT_DISABLE_TIMING as u32), "cuEventCreate")?; }
         Ok(CudaEvent { raw: ev })
     }
 
