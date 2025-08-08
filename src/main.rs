@@ -14,7 +14,7 @@ use cuda_driver_sys::CUdeviceptr;
 
 use display::{Display, FpsCounter};
 use cuda_wrapper::{CudaContext, dim3, CameraBuffers};
-use ecs::ecs::{World, update_rotation, Transform, Camera, SdfBase, MaterialComponent, Rotating, SpaceFolding};
+use ecs::ecs::{World, update_rotation, Transform, Camera, SdfBase, MaterialComponent, Rotating, SpaceFolding, Axis};
 use ecs::math_op::math_op::{Vec3, Quat, Mat3};
 use crate::ecs::ecs_gpu_interface::ecs_gpu_interface::{SdfType, TextureManager};
 
@@ -65,10 +65,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     // 2) Material
     let cube_tex = tex_mgr.load(Path::new("./src/textures/lines_texture.png"))?;
     world.insert_material(cube_ent, MaterialComponent {
-        color: [1.0, 1.0, 1.0],
+        color: [0.0, 1.0, 1.0],
         texture: Some(cube_tex),
-        use_texture: true,
+        use_texture: false,
     });
+    // Space folding
+    world.insert_space_folding(cube_ent, SpaceFolding::new_2d(Mat3::Id * 10.0, Axis::U, Axis::W));
     // 3) Rotation
     world.insert_rotating(cube_ent, Rotating {
         speed_deg_per_sec: 30.0,
@@ -88,12 +90,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Material
     let wood_tex = tex_mgr.load(Path::new("./src/textures/Wood_texture.png"))?;
     world.insert_material(sphere_ent, MaterialComponent {
-        color: [1.0, 1.0, 1.0],
+        color: [1.0, 1.0, 0.0],
         texture: Some(wood_tex),
-        use_texture: true,
+        use_texture: false,
     });
     // Lattice‐folding
-    world.insert_space_folding(sphere_ent, SpaceFolding::new(Mat3::Id * 10.0));
+    world.insert_space_folding(sphere_ent, SpaceFolding::new_1d(Mat3::Id * 10.0, Axis::V));
     // Rotation
     world.insert_rotating(sphere_ent, Rotating {
         speed_deg_per_sec: 30.0,
@@ -219,9 +221,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                     });
                     let tex = tex_mgr.load(Path::new("./src/textures/lines_texture.png"))?;
                     world.insert_material(cube_ent, MaterialComponent {
-                    color: [1.0,1.0,1.0],
+                    color: [0.0 ,1.0,1.0],
                     texture: Some(tex),
-                    use_texture: true,
+                    use_texture: false,
                     });
                     world.insert_rotating(cube_ent, Rotating { speed_deg_per_sec:30.0 });
                 },
@@ -247,9 +249,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                 _ => {}
             }
         }
-
-        rotation_dir_x_axis = 1.0;
-        rotation_dir_y_axis = 1.0;
 
         let now = Instant::now();
         let dt = now.duration_since(last_frame_time).as_secs_f32();

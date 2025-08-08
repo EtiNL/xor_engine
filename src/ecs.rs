@@ -100,31 +100,66 @@ pub mod ecs {
         pub rotation: Quat,
     }
 
+
+    #[derive(Clone, Copy, Debug)]
+    pub enum Axis { U, V, W }
+
+    impl Axis {
+        #[inline] fn to_mask(self) -> u32 {
+            match self {
+                Axis::U => 0b001,
+                Axis::V => 0b010,
+                Axis::W => 0b100,
+            }
+        }
+    }
+
     #[derive(Clone, Debug)]
     pub struct SpaceFolding {
         pub lattice_basis: Mat3,
         pub lattice_basis_inv: Mat3, 
         pub min_half_thickness: f32,
+        pub active_mask: u32, // bit0=u, bit1=v, bit2=w
     }
     impl SpaceFolding {
-        pub fn new(lattice_basis: Mat3) -> Self {
+        pub fn new_3d(basis: Mat3) -> Self {
+            Self::new_with_mask(basis, 0b111)
+        }
+
+        pub fn new_2d(basis: Mat3, a: Axis, b: Axis) -> Self {
+            let mask = a.to_mask() | b.to_mask();
+            Self::new_with_mask(basis, mask)
+        }
+
+        pub fn new_1d(basis: Mat3, a: Axis) -> Self {
+            Self::new_with_mask(basis, a.to_mask())
+        }
+
+        pub fn new_with_mask(lattice_basis: Mat3, active_mask: u32) -> Self {
+            // sanity: basis must be invertible
+            let det = lattice_basis.det();
+            debug_assert!(det != 0.0, "SpaceFolding basis must be invertible");
             let lattice_basis_inv = lattice_basis.inv();
-    
+
+            // axis lengths in world space
             let u_len = (lattice_basis.a11*lattice_basis.a11
-                       + lattice_basis.a21*lattice_basis.a21
-                       + lattice_basis.a31*lattice_basis.a31).sqrt();
-    
+                    + lattice_basis.a21*lattice_basis.a21
+                    + lattice_basis.a31*lattice_basis.a31).sqrt();
             let v_len = (lattice_basis.a12*lattice_basis.a12
-                       + lattice_basis.a22*lattice_basis.a22
-                       + lattice_basis.a32*lattice_basis.a32).sqrt();
-    
+                    + lattice_basis.a22*lattice_basis.a22
+                    + lattice_basis.a32*lattice_basis.a32).sqrt();
             let w_len = (lattice_basis.a13*lattice_basis.a13
-                       + lattice_basis.a23*lattice_basis.a23
-                       + lattice_basis.a33*lattice_basis.a33).sqrt();
-    
-            let min_half_thickness = 0.5 * u_len.min(v_len).min(w_len);
-    
-            Self { lattice_basis, lattice_basis_inv, min_half_thickness }
+                    + lattice_basis.a23*lattice_basis.a23
+                    + lattice_basis.a33*lattice_basis.a33).sqrt();
+
+            // only consider active axes when computing safety thickness
+            let mut min_len = f32::INFINITY;
+            if (active_mask & 0b001) != 0 { min_len = min_len.min(u_len); }
+            if (active_mask & 0b010) != 0 { min_len = min_len.min(v_len); }
+            if (active_mask & 0b100) != 0 { min_len = min_len.min(w_len); }
+            let min_half_thickness = if min_len.is_finite() { 0.5 * min_len } else { 0.0 };
+
+            Self { lattice_basis, lattice_basis_inv, min_half_thickness, active_mask }
         }
     }
 
@@ -506,6 +541,7 @@ pub mod ecs {
                     lattice_basis: folding.lattice_basis,
                     lattice_basis_inv: folding.lattice_basis_inv,
                     min_half_thickness: folding.min_half_thickness,
+                    active_mask: folding.active_mask,
                 };
                 self.gpu_foldings.push(gpu_slot, &gpu_struct)?;
                 scene_updated = true;

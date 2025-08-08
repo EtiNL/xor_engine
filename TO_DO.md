@@ -17,19 +17,13 @@
 - permettre d'éditer les arbres de dépendances/contraintes/interaction entre entities
 
 # ECS
-- put sample per pixel in the camera
-- put light in ecs and make it customizable
 - add some basic physics simulations
 - faire des arbres de dependances/contraintes/interactions entre entities
 
 # main
 - make the code more sustainable over time
 - add sdf deformation/union/intersection... 
-- add lattice boundaries
-- integrate solid color to renderables for them to use either a texture or a color and then other materials like procedural patterns, metallic/roughness by evolving the Material enum and the GPU representation (e.g., a small material descriptor struct).
-
-
-
+- add lattice boundaries other materials like procedural patterns, metallic/roughness by evolving the Material enum and the GPU representation
 
 # AI features
 - denoiser

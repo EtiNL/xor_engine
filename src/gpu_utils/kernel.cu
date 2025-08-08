@@ -168,6 +168,7 @@ struct GpuSpaceFolding {
     Mat3   lattice_basis;
     Mat3   lattice_basis_inv;
     float min_half_thickness;
+    unsigned int active_mask;    // bit0=u/X, bit1=v/Y, bit2=w/Z
 };
 
 extern "C"
@@ -461,7 +462,10 @@ void raymarch(
                 const GpuSpaceFolding& fold = foldings[fid];
                 Vec3 diff = p - center;
                 Vec3 lc   = diff * fold.lattice_basis_inv;
-                Vec3 kf( roundf(lc.x), roundf(lc.y), roundf(lc.z) );
+                float kx = (fold.active_mask & 1u) ? roundf(lc.x) : 0.0f;
+                float ky = (fold.active_mask & 2u) ? roundf(lc.y) : 0.0f;
+                float kz = (fold.active_mask & 4u) ? roundf(lc.z) : 0.0f;
+                Vec3 kf(kx, ky, kz);
                 center = center + kf * fold.lattice_basis;
                 min_half_thickness = fold.min_half_thickness;
             }
