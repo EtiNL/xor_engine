@@ -78,13 +78,50 @@ struct Vec3 {
     }
 };
 
-struct Camera {
-    Vec3 position;
-    Vec3 u, v, w;       // camera basis
+struct Image_ray_accum {
+    int* ray_per_pixel;
+    unsigned char* image;
+};
+
+__device__ void accumulate(Image_ray_accum& acc,
+                           const Vec3& color,
+                           int pixel_idx)
+{
+    int rpp      = acc.ray_per_pixel[pixel_idx]; 
+    int new_rpp  = rpp + 1;
+    int base     = 3 * pixel_idx;
+
+    acc.image[base + 0] =
+        (acc.image[base + 0] * rpp + color.x * 255.0f) / new_rpp;
+    acc.image[base + 1] =
+        (acc.image[base + 1] * rpp + color.y * 255.0f) / new_rpp;
+    acc.image[base + 2] =
+        (acc.image[base + 2] * rpp + color.z * 255.0f) / new_rpp;
+
+    acc.ray_per_pixel[pixel_idx] = new_rpp;
+}
+
+struct GpuCamera {
+    /* intrinsics / pose */
+    Vec3  position, u, v, w;
     float aperture;
     float focus_dist;
     float viewport_width;
     float viewport_height;
+
+    /* buffers */
+    curandState*     rand_states;   // nullptr when aperture == 0
+    float*           origins;
+    float*           directions;
+    Image_ray_accum  accum;         // .ray_per_pixel may be nullptr
+    unsigned char*   image;
+
+    /* misc */
+    unsigned int spp;
+    unsigned int width;
+    unsigned int height;
+    
+    unsigned int rand_seed_init_count;
 };
 
 enum SdfType {
@@ -94,57 +131,50 @@ enum SdfType {
     // Extend as needed
 };
 
-struct __align__(8) SdfObject {
-    int sdf_type;           // 0 = sphere, ...
-    float params[3];        // general-purpose parameters
-    Vec3 center, u, v, w;   // center and local basis
-    unsigned char* texture; // pointer to device image data
-    int tex_width;          // texture width
-    int tex_height;         // texture height
-    Mat3 lattice_basis;     // basis of the lattice
-    Mat3 lattice_basis_inv;
-    int active;             // if this sdf object is still active in the world or if it has been despawned
+#define INVALID_TEXTURE 0xFFFFFFFFu
+#define INVALID_LIGHT   0xFFFFFFFFu
+#define INVALID_FOLDING 0xFFFFFFFFu
+
+// GPU mirror of Rust GpuSdfObjectBase
+struct GpuSdfObjectBase {
+    int    sdf_type;
+    float  params[3];
+    Vec3   center;
+    Vec3   u, v, w;
+    unsigned int material_id;
+    unsigned int light_id;
+    unsigned int lattice_folding_id;
+    unsigned int active;
 };
 
-struct Image_ray_accum {
-    int* ray_per_pixel;
-    unsigned char* image;
+// GPU mirror of Rust GpuMaterial
+struct GpuMaterial {
+    float        color[3];
+    unsigned int use_texture;
+    const unsigned char* texture_data;
+    unsigned int width;
+    unsigned int height;
 };
 
-__device__ void accumulate(Image_ray_accum* acc,
-                           const Vec3& color,
-                           int pixel_idx)
-{
-    int rpp      = acc->ray_per_pixel[pixel_idx]; 
-    int new_rpp  = rpp + 1;
-    int base     = 3 * pixel_idx;
+// GPU mirror of Rust GpuLight
+struct GpuLight {
+    Vec3   position;
+    Vec3   color;
+    float  intensity;
+};
 
-    acc->image[base + 0] =
-        (acc->image[base + 0] * rpp + color.x * 255.0f) / new_rpp;
-    acc->image[base + 1] =
-        (acc->image[base + 1] * rpp + color.y * 255.0f) / new_rpp;
-    acc->image[base + 2] =
-        (acc->image[base + 2] * rpp + color.z * 255.0f) / new_rpp;
-
-    acc->ray_per_pixel[pixel_idx] = new_rpp;
-}
+// GPU mirror of Rust GpuSpaceFolding
+struct GpuSpaceFolding {
+    Mat3   lattice_basis;
+    Mat3   lattice_basis_inv;
+    float min_half_thickness;
+};
 
 extern "C"
 __global__ void reset_accum(int* ray_per_pixel, int total_pixels) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < total_pixels) {
         ray_per_pixel[i] = 0;
-    }
-}
-
-extern "C"
-__global__ void init_random_states(curandState *rand_states, int width, int height, unsigned int seed) {
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
-    int i = y * width + x;
-
-    if (x < width && y < height) {
-        curand_init(seed, i, 0, &rand_states[i]);
     }
 }
 
@@ -158,52 +188,67 @@ __device__ Vec3 random_in_unit_disk(curandState* rand_state) {
 }
 
 extern "C" __global__
-void generate_rays(int width, int height, Camera* cam_ptr, curandState *rand_states, float* origins, float* directions) {
-    Camera cam = *cam_ptr;
-
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
-    int i = y * width + x;
-
+void generate_rays(int width, int height, GpuCamera* cameras, int camera_index)
+{   
+    GpuCamera& cam = cameras[camera_index];
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    const int i = y * width + x;
     if (x >= width || y >= height) return;
 
-    // For floating-point calculations
-    float u = (x + 0.5f) / width * 2.0f - 1.0f;
-    float v = 1.0f - ((y + 0.5f) / height) * 2.0f;
+    /* ----- camera-space ray dir ------------------------------------------------ */
+    const float u = (x + 0.5f) / width  * 2.0f - 1.0f;
+    const float v = 1.0f - (y + 0.5f) / height * 2.0f;
 
-    Vec3 dir_camera = Vec3(
-        u * cam.viewport_width * 0.5f,
+    Vec3 dir_cam(
+        u * cam.viewport_width  * 0.5f,
         v * cam.viewport_height * 0.5f,
-        1.0f
-    ).normalize();
+        1.0f);
+    dir_cam = dir_cam.normalize();
 
-    Vec3 dir_world = cam.u * dir_camera.x + cam.v * dir_camera.y + cam.w * dir_camera.z;
+    Vec3 dir_world = cam.u * dir_cam.x + cam.v * dir_cam.y + cam.w * dir_cam.z;
     Vec3 origin, direction;
 
-    curandState local_rand = rand_states[i];
+    /* ----- depth of field ------------------------------------------------------ */
+    if (cam.aperture > 0.0f)
+    {
+        // one-time RNG setup per pixel
+        if (cam.rand_seed_init_count < width*height)
+        {   
+            curand_init(42u,            /* seed  */
+                        i,              /* sequence */
+                        0u,             /* offset  */
+                        &cam.rand_states[i]);
 
-    if (cam.aperture > 0.0f) {
-        float lens_radius = cam.aperture * 0.5f;
-        Vec3 rd = random_in_unit_disk(&local_rand) * lens_radius;
-        Vec3 offset = cam.u * rd.x + cam.v * rd.y;
-        origin = cam.position + offset;
-        Vec3 focal_point = cam.position + dir_world * cam.focus_dist;
-        direction = (focal_point - origin).normalize();
+            /* SAFELY bump the counter in global memory */
+            atomicAdd(&cam.rand_seed_init_count, 1u);
+        }
 
-        rand_states[i] = local_rand;
+        curandState local = cam.rand_states[i];
+        const float lens_r = cam.aperture * 0.5f;
+        Vec3  rd = random_in_unit_disk(&local) * lens_r;
+        Vec3  offset = cam.u * rd.x + cam.v * rd.y;
 
-    } else {
-        origin = cam.position;
-        direction = dir_world.normalize();
+        origin    = cam.position + offset;
+        Vec3 fp   = cam.position + dir_world * cam.focus_dist;
+        direction = (fp - origin).normalize();
+
+        cam.rand_states[i] = local;            // write back
+    }
+    else
+    {
+        origin    = cam.position;
+        direction = dir_world;                 // already unit length
     }
 
-    origins[i * 3 + 0] = origin.x;
-    origins[i * 3 + 1] = origin.y;
-    origins[i * 3 + 2] = origin.z;
+    /* ----- store ---------------------------------------------------------------- */
+    cam.origins   [3*i + 0] = origin.x;
+    cam.origins   [3*i + 1] = origin.y;
+    cam.origins   [3*i + 2] = origin.z;
 
-    directions[i * 3 + 0] = direction.x;
-    directions[i * 3 + 1] = direction.y;
-    directions[i * 3 + 2] = direction.z;
+    cam.directions[3*i + 0] = direction.x;
+    cam.directions[3*i + 1] = direction.y;
+    cam.directions[3*i + 2] = direction.z;
 }
 
 __device__ float sdf_sphere(Vec3 sphere_center, float radius, Vec3 ray_point) {
@@ -247,54 +292,61 @@ __device__ Vec3 grad_sdf_box(Vec3 p, Vec3 center, Vec3 u, Vec3 v, Vec3 w, Vec3 h
     return u * g_local.x + v * g_local.y + w * g_local.z;
 }
 
-__device__ float evaluate_sdf(const SdfObject& obj, Vec3 p) {
+__device__ float evaluate_sdf(const GpuSdfObjectBase& obj, Vec3 p, Vec3 center) {
     if (obj.sdf_type == SDF_SPHERE) {
         float radius = obj.params[0];
-        return sdf_sphere(obj.center, radius, p);
+        return sdf_sphere(center, radius, p);
     } else if (obj.sdf_type == SDF_BOX) {
         Vec3 half_extents = Vec3(obj.params[0], obj.params[1], obj.params[2]);
-        return sdf_box(p, obj.center, obj.u, obj.v, obj.w, half_extents);
+        return sdf_box(p, center, obj.u, obj.v, obj.w, half_extents);
     }
     return 1e9;
 }
 
-__device__ Vec3 evaluate_grad_sdf(const SdfObject& obj, Vec3 p) {
+__device__ Vec3 evaluate_grad_sdf(const GpuSdfObjectBase& obj, Vec3 p, Vec3 center) {
     if (obj.sdf_type == SDF_SPHERE) {
         float radius = obj.params[0];
-        return grad_sdf_sphere(obj.center, radius, p);
+        return grad_sdf_sphere(center, radius, p);
     } else if (obj.sdf_type == SDF_BOX) {
         Vec3 half_extents = Vec3(obj.params[0], obj.params[1], obj.params[2]);
-        return grad_sdf_box(p, obj.center, obj.u, obj.v, obj.w, half_extents);
+        return grad_sdf_box(p, center, obj.u, obj.v, obj.w, half_extents);
     }
 }
 
-__device__ Vec2 spherical_mapping(Vec3 point, Vec3 center, Vec3 u, Vec3 v, Vec3 w) {
-    Vec3 dir = (point - center).normalize(); // Point sur la sphère normalisée
+// sample from the raw 3-channel byte buffer in the material
+__device__ Vec3 sample_texture(
+    const GpuMaterial& mat,
+    Vec2 uv
+) {
+    // clamp uv into [0,1]
+    float u = fminf(fmaxf(uv.x, 0.0f), 1.0f);
+    float v = fminf(fmaxf(uv.y, 0.0f), 1.0f);
 
-    Vec3 local_dir = Vec3(
-        Vec3::dot(dir, u),
-        Vec3::dot(dir, v),
-        Vec3::dot(dir, w)
-    );
+    // convert to texel coords
+    int tx = min((int)(u * (mat.width  - 1)), (int)mat.width  - 1);
+    int ty = min((int)(v * (mat.height - 1)), (int)mat.height - 1);
 
-    float u_map = 0.5f + atan2f(local_dir.z, local_dir.x) / (2.0f * M_PI);
-    float v_map = 0.5f - asinf(local_dir.y) / M_PI;
+    // each pixel is 3 bytes
+    int idx = (ty * mat.width + tx) * 3;
+    unsigned char r = mat.texture_data[idx + 0];
+    unsigned char g = mat.texture_data[idx + 1];
+    unsigned char b = mat.texture_data[idx + 2];
 
-    return Vec2(u_map, v_map);
+    // convert [0,255] → [0,1]
+    const float inv255 = 1.0f / 255.0f;
+    return Vec3(r * inv255, g * inv255, b * inv255);
 }
 
-__device__ Vec3 sample_texture(const SdfObject& obj, Vec2 uv) {
-    float u = fminf(fmaxf(uv.x,0.f),1.f);
-    float v = fminf(fmaxf(uv.y,0.f),1.f);
-    int   tx = int(u * (obj.tex_width  -1));
-    int   ty = int(v * (obj.tex_height -1));
-    int   idx= (ty*obj.tex_width + tx)*3;
-    unsigned char r=obj.texture[idx],g=obj.texture[idx+1],b=obj.texture[idx+2];
-    return Vec3(r/255.f,g/255.f,b/255.f);
-}
-
-__device__ Vec3 triplanar_sample(const SdfObject& obj, Vec3 p, Vec3 normal) {
-    Vec3 d = p - obj.center;
+// triplanar blending based on face normals
+__device__ Vec3 triplanar_sample(
+    const GpuMaterial&   mat,
+    const GpuSdfObjectBase& obj,
+    Vec3 p,
+    Vec3 normal,
+    Vec3 center
+) {
+    // local space coords
+    Vec3 d = p - center;
     Vec3 local = Vec3(
         Vec3::dot(d, obj.u),
         Vec3::dot(d, obj.v),
@@ -302,140 +354,183 @@ __device__ Vec3 triplanar_sample(const SdfObject& obj, Vec3 p, Vec3 normal) {
     );
     Vec3 he = Vec3(obj.params[0], obj.params[1], obj.params[2]);
 
-    float blend_sharpness = 4.0f; // Higher = sharper transitions
+    // blend weights = abs(normal) normalized
+    Vec3 w = Vec3(fabsf(normal.x),
+                  fabsf(normal.y),
+                  fabsf(normal.z));
+    float sum = w.x + w.y + w.z + 1e-5f;
+    w = w / sum;
 
-    Vec3 weights = Vec3(
-        powf(fabsf(normal.x), blend_sharpness),
-        powf(fabsf(normal.y), blend_sharpness),
-        powf(fabsf(normal.z), blend_sharpness)
-    );
+    // build UVs for each projection
+    Vec2 uvx = Vec2(local.z/(2*he.z)+0.5f,
+                    local.y/(2*he.y)+0.5f);
+    Vec2 uvy = Vec2(local.x/(2*he.x)+0.5f,
+                    local.z/(2*he.z)+0.5f);
+    Vec2 uvz = Vec2(local.x/(2*he.x)+0.5f,
+                    local.y/(2*he.y)+0.5f);
 
-    float wsum = weights.x + weights.y + weights.z + 1e-5f;
+    Vec3 cx = sample_texture(mat, uvx);
+    Vec3 cy = sample_texture(mat, uvy);
+    Vec3 cz = sample_texture(mat, uvz);
 
-    weights = weights / wsum;
-
-    Vec2 uv_x = Vec2(local.z / (2.0f * he.z) + 0.5f, local.y / (2.0f * he.y) + 0.5f);
-    Vec2 uv_y = Vec2(local.x / (2.0f * he.x) + 0.5f, local.z / (2.0f * he.z) + 0.5f);
-    Vec2 uv_z = Vec2(local.x / (2.0f * he.x) + 0.5f, local.y / (2.0f * he.y) + 0.5f);
-
-    Vec3 color_x = sample_texture(obj, uv_x);
-    Vec3 color_y = sample_texture(obj, uv_y);
-    Vec3 color_z = sample_texture(obj, uv_z);
-
-    return color_x * weights.x + color_y * weights.y + color_z * weights.z;
+    return cx * w.x + cy * w.y + cz * w.z;
 }
 
-__device__ Vec3 obj_mapping(const SdfObject& obj, Vec3 p) {
+// dispatch to sphere or box UVs, then sample
+__device__ Vec3 obj_mapping(
+    const GpuMaterial&    mat,
+    const GpuSdfObjectBase& obj,
+    Vec3 p, 
+    Vec3 center
+) {
     if (obj.sdf_type == SDF_SPHERE) {
-        Vec2 uv = spherical_mapping(p, obj.center, obj.u, obj.v, obj.w);
-        Vec3 color = sample_texture(obj, uv);
-        return color;
-    }
-    else if (obj.sdf_type == SDF_BOX) {
-        Vec3 normal = evaluate_grad_sdf(obj, p) * -1.0f;
-        Vec3 color = triplanar_sample(obj, p, normal);
-        return color;
+        // spherical mapping
+        Vec3 dir = (p - center).normalize();
+        Vec3 local_dir = Vec3(
+            Vec3::dot(dir, obj.u),
+            Vec3::dot(dir, obj.v),
+            Vec3::dot(dir, obj.w)
+        );
+        float u = 0.5f + atan2f(local_dir.z, local_dir.x)/(2.0f*M_PI);
+        float v = 0.5f - asinf(local_dir.y)/M_PI;
+        return sample_texture(mat, Vec2(u,v));
+    } else {
+        // triplanar box
+        Vec3 normal = (evaluate_grad_sdf(obj, p, center) * -1.0f).normalize();
+        return triplanar_sample(mat, obj, p, normal, center);
     }
 }
-
 
 extern "C" __global__
-void raymarch(int width, int height, float* origins, float* directions, SdfObject* scene, int num_objects, Image_ray_accum* image_acc) {
+void raymarch(
+    int width, int height,
+    GpuCamera* cameras,
+    int camera_index,
+    const GpuSdfObjectBase* __restrict__ sdf_objs,
+    int num_objs,
+    const GpuMaterial* __restrict__ materials,
+    const GpuLight* __restrict__ lights,
+    const GpuSpaceFolding* __restrict__ foldings
+) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
     int i = y * width + x;
-
     if (x >= width || y >= height) return;
 
-    Vec3 origin = Vec3(
-        origins[i * 3 + 0],
-        origins[i * 3 + 1],
-        origins[i * 3 + 2]
+    GpuCamera& cam = cameras[camera_index];
+
+    Vec3 origin(
+        cam.origins[i*3 + 0],
+        cam.origins[i*3 + 1],
+        cam.origins[i*3 + 2]
     );
-    Vec3 dir = Vec3(
-        directions[i * 3 + 0],
-        directions[i * 3 + 1],
-        directions[i * 3 + 2]
+    Vec3 dir(
+        cam.directions[i*3 + 0],
+        cam.directions[i*3 + 1],
+        cam.directions[i*3 + 2]
     );
 
     Vec3 p = origin;
     float total_dist = 0.0f;
-    const float eps = 0.001f;
+    const float eps      = 0.001f;
     const float max_dist = 200.0f;
-    const int max_steps = 100;
-    int steps = 0;
+    const int   max_steps = 100;
 
-    float min_dist = 1e20f;
-    SdfObject sdf_min;
+    int steps    = 0;
+    float min_dist;
+    int   best_j = -1;
 
+    // temp copy for per‐object folding
+    Vec3 center;
+    Vec3 center_min;
+
+    bool hit = false;
     while (steps < max_steps) {
         min_dist = 1e20f;
+        best_j   = -1;
 
+        for (int j = 0; j < num_objs; ++j) {
+            const GpuSdfObjectBase& src = sdf_objs[j];
+            center = src.center;
+            if (src.active == 0) continue;
 
-        for (int j = 0; j < num_objects; ++j) {
-            SdfObject sdf_obj = scene[j];
-            if (sdf_obj.active == 0) continue;
-
-            SdfObject eval_sdf = sdf_obj;
-
-            bool folded = !sdf_obj.lattice_basis.is_null();
-
-            if (folded) {
-                Vec3 diff = p - sdf_obj.center;
-                // coordonnées dans la grille : (p - center) * invL  (row-vector semantics)
-                Vec3 lattice_coords = diff * sdf_obj.lattice_basis_inv;
-                // arrondir pour trouver quel multiple entier de la grille est le plus proche
-                Vec3 kf = Vec3(roundf(lattice_coords.x), roundf(lattice_coords.y), roundf(lattice_coords.z));
-                // reconstruire le centre le plus proche : center + (kf * L)
-                Vec3 nearest_center_offset = kf * sdf_obj.lattice_basis;
-                eval_sdf.center = sdf_obj.center + nearest_center_offset;
+            // folding?
+            unsigned fid = src.lattice_folding_id;
+            float min_half_thickness = 0.0;
+            if (fid != INVALID_FOLDING) {
+                const GpuSpaceFolding& fold = foldings[fid];
+                Vec3 diff = p - center;
+                Vec3 lc   = diff * fold.lattice_basis_inv;
+                Vec3 kf( roundf(lc.x), roundf(lc.y), roundf(lc.z) );
+                center = center + kf * fold.lattice_basis;
+                min_half_thickness = fold.min_half_thickness;
             }
 
-            float d_eval = evaluate_sdf(eval_sdf, p);
-
-            if (d_eval < 0) {
-                // when the camera is inside a lattice folded onject we get out via this simple formula
-                float center_dist = (eval_sdf.center - p).length();
-                float lattice_x = Vec3(eval_sdf.lattice_basis.a11, eval_sdf.lattice_basis.a21, eval_sdf.lattice_basis.a31).length();
-                float lattice_y = Vec3(eval_sdf.lattice_basis.a12, eval_sdf.lattice_basis.a22, eval_sdf.lattice_basis.a32).length();
-                float lattice_z = Vec3(eval_sdf.lattice_basis.a13, eval_sdf.lattice_basis.a23, eval_sdf.lattice_basis.a33).length();
-                d_eval = fminf(fminf(lattice_x, lattice_y), lattice_z)/2 - center_dist;
+            float d = evaluate_sdf(src, p, center);
+            // if inside, push out
+            if (d < 0) {
+                float center_dist = (center - p).length();
+                d = min_half_thickness - center_dist;
             }
 
-            if (d_eval < min_dist) {
-                min_dist = d_eval;
-                sdf_min = eval_sdf;
+            if (d < min_dist) {
+                center_min = center;
+                min_dist = d;
+                best_j   = j;
             }
         }
 
-        if ((min_dist < eps) || total_dist > max_dist) {
+        if (best_j < 0 || min_dist < eps || total_dist > max_dist) {
+            if (min_dist < eps) {
+                hit = true;
+            }
             break;
         }
 
-
         p = p + dir * min_dist;
-        total_dist += min_dist;
-        steps++;
+        total_dist = total_dist + min_dist;
+        ++steps;
     }
 
-    bool hit = (min_dist < eps);
-
-    Vec3 color;
-    if (!hit) {
-        color = Vec3(0.0f, 0.0f, 0.0f);
-    } else {
-        Vec3 normal = Vec3(0.0f, 0.0f, 0.0f);
-        Vec3 light_dir = Vec3(0.5f, 1.0f, -0.6f).normalize();
-        color = obj_mapping(sdf_min, p);
-        normal = (evaluate_grad_sdf(sdf_min, p) * -1.0f).normalize();
+    // shading
+    Vec3 color(0,0,0);
+    if (best_j >= 0 && hit) {
+        // reconstruct final eval for shading (including fold)
+        const GpuSdfObjectBase& eval = sdf_objs[best_j];
+        unsigned fid = eval.lattice_folding_id;
         
+        if (eval.material_id != INVALID_TEXTURE) {
+            
+            const GpuMaterial& mat = materials[ eval.material_id ];
+            // normal
+            Vec3 normal = evaluate_grad_sdf(eval, p, center_min) * -1.0f;
 
-        float shade = fmaxf(0.0f, Vec3::dot(normal, light_dir));
-        color = color * shade;
+            if (mat.use_texture) {
+                color = obj_mapping(mat, eval, p, center_min);
+            } else {
+                color = Vec3(mat.color[0], mat.color[1], mat.color[2]);
+            }
+
+            Vec3 L = Vec3(0.5f,1.0f,-0.6f).normalize();
+            float lam = fmaxf(0.0f, Vec3::dot(normal, L));
+            color = color*lam;
+            if (cam.spp > 1) {
+                accumulate(cam.accum, color, i);
+            }
+            else {
+                cam.image[i*3 + 0] = color.x * 255.0f;
+                cam.image[i*3 + 1] = color.y * 255.0f;
+                cam.image[i*3 + 2] = color.z * 255.0f;
+            }
+        }
     }
-
-    accumulate(image_acc, color, i);
+    else {
+                cam.image[i*3 + 0] = color.x * 255.0f;
+                cam.image[i*3 + 1] = color.y * 255.0f;
+                cam.image[i*3 + 2] = color.z * 255.0f;
+    }
 }
+
 
 
 // Test kernels
