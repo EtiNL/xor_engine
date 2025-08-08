@@ -515,7 +515,7 @@ void raymarch(
                 color = Vec3(mat.color[0], mat.color[1], mat.color[2]);
             }
 
-            Vec3 L = Vec3(0.5f,1.0f,-0.6f).normalize();
+            Vec3 L = Vec3(0.5f,-1.0f,-0.6f).normalize();
             float lam = fmaxf(0.0f, Vec3::dot(normal, L));
             color = color*lam;
             if (cam.spp > 1) {

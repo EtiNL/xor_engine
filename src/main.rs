@@ -45,7 +45,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             Camera::new(field_of_view, width, height, aperture, focus_distance, sample_per_pixel),
             &cuda_context,
     )?;
-    world.insert_transform(cam_ent, Transform::default());
+    world.insert_transform(cam_ent, Transform {
+        position: Vec3::new(0.0, 2.0, 3.0),
+        rotation: Quat::identity(),
+    });
     world.active_camera(cam_ent); 
 
     // Texture manager stays the same
@@ -65,7 +68,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // 2) Material
     let cube_tex = tex_mgr.load(Path::new("./src/textures/lines_texture.png"))?;
     world.insert_material(cube_ent, MaterialComponent {
-        color: [0.0, 1.0, 1.0],
+        color: [0.0, 0.5, 0.5],
         texture: Some(cube_tex),
         use_texture: false,
     });
@@ -90,12 +93,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Material
     let wood_tex = tex_mgr.load(Path::new("./src/textures/Wood_texture.png"))?;
     world.insert_material(sphere_ent, MaterialComponent {
-        color: [1.0, 1.0, 0.0],
+        color: [0.5, 0.5, 0.0],
         texture: Some(wood_tex),
         use_texture: false,
     });
     // Lattice‐folding
-    world.insert_space_folding(sphere_ent, SpaceFolding::new_1d(Mat3::Id * 10.0, Axis::V));
+    world.insert_space_folding(sphere_ent, SpaceFolding::new_1d(Mat3::Id * 5.0, Axis::U));
     // Rotation
     world.insert_rotating(sphere_ent, Rotating {
         speed_deg_per_sec: 30.0,
@@ -296,10 +299,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                 )?;
 
                 cuda_context.event_synchronize(&ev_done)?;
-                // Either copy into your Vec<u8>…
-                // host_img.copy_from_slice(pinned.as_bytes());
-                // …or render directly from pinned.as_bytes() to SDL if your API allows
-                display.render_texture(pinned.as_bytes(), (width*3) as usize)?;
             
                 if sample_per_pixel > 1 {
 
@@ -322,7 +321,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
 
-        // display fps
+        // display fps & image
+        display.render_texture(pinned.as_bytes(), (width*3) as usize)?;
         let fps = fps_counter.update();
         display.render_fps(fps)?;
         display.present();
