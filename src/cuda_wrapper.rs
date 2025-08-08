@@ -3,6 +3,8 @@ use std::{collections::HashMap, ffi::{c_void, CString}, ptr::null_mut, error::Er
 use memoffset::offset_of;
 use std::mem::size_of;
 use std::marker::PhantomData;
+use std::slice;
+
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -231,6 +233,37 @@ impl CudaContext {
         Ok(())
     }
 
+    pub fn add_dependency(
+        &self,
+        graph: CUgraph,
+        from: &str,
+        to: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let a = *self.kernel_nodes
+            .get(from)
+            .ok_or(format!("node {} not found", from))?;
+        let b = *self.kernel_nodes
+            .get(to)
+            .ok_or(format!("node {} not found", to))?;
+
+        // tableaux 1-élément pour respecter l’API
+        let from_arr = [a];
+        let to_arr   = [b];
+
+        unsafe {
+            check_cuda_result(
+                cuGraphAddDependencies(
+                    graph,                 // <<< le handle du graph
+                    from_arr.as_ptr(),     // *const CUgraphNode
+                    to_arr.as_ptr(),       // *const CUgraphNode
+                    1,                     // nombre de deps
+                ),
+                "cuGraphAddDependencies",
+            )?;
+        }
+        Ok(())
+    }
+
     pub fn instantiate_graph(&self, graph: CUgraph) -> Result<CUgraphExec, Box<dyn Error>> {
         let mut graph_exec = null_mut();
         unsafe {
@@ -288,7 +321,68 @@ impl CudaContext {
         }
         Ok(())
     }
+
+    // 1) Allocate pinned (page-locked) host memory
+    pub fn alloc_pinned(&self, bytes: usize) -> Result<PinnedBuffer, Box<dyn Error>> {
+        let mut p: *mut c_void = null_mut();
+        unsafe {
+            check_cuda_result(cuMemHostAlloc(&mut p, bytes, 0), "cuMemHostAlloc")?;
+        }
+        Ok(PinnedBuffer { ptr: p, len: bytes })
+    }
+
+    // 2) Create an event
+    pub fn create_event(&self) -> Result<CudaEvent, Box<dyn Error>> {
+        let mut ev: CUevent = null_mut();
+        unsafe { check_cuda_result(cuEventCreate(&mut ev, 0), "cuEventCreate")?; }
+        Ok(CudaEvent { raw: ev })
+    }
+
+    // 3) Async DtoH copy on a given stream into pinned memory
+    pub fn memcpy_dtoh_async(&self, dst_pinned: &PinnedBuffer, src_device: CUdeviceptr, bytes: usize, stream_name: &str)
+        -> Result<(), Box<dyn Error>>
+    {
+        let stream = self.get_stream(stream_name)?;
+        unsafe {
+            check_cuda_result(
+                cuMemcpyDtoHAsync_v2(dst_pinned.as_ptr(), src_device, bytes, stream),
+                "cuMemcpyDtoHAsync_v2"
+            )?;
+        }
+        Ok(())
+    }
+
+    // 4) Record / synchronize an event on a stream
+    pub fn event_record_on(&self, ev: &CudaEvent, stream_name: &str) -> Result<(), Box<dyn Error>> {
+        let stream = self.get_stream(stream_name)?;
+        unsafe { check_cuda_result(cuEventRecord(ev.raw(), stream), "cuEventRecord")?; }
+        Ok(())
+    }
+    pub fn event_synchronize(&self, ev: &CudaEvent) -> Result<(), Box<dyn Error>> {
+        unsafe { check_cuda_result(cuEventSynchronize(ev.raw()), "cuEventSynchronize")?; }
+        Ok(())
+    }
+
+    // 5) One-liner: launch graph, async copy to pinned, record event
+    pub fn launch_and_stage_image(
+        &self,
+        graph_exec: CUgraphExec,
+        src_device_ptr: CUdeviceptr,
+        bytes: usize,
+        dst_pinned: &PinnedBuffer,
+        stream_name: &str,
+        ev: &CudaEvent,
+    ) -> Result<(), Box<dyn Error>> {
+        // Launch
+        unsafe { check_cuda_result(cuGraphLaunch(graph_exec, self.get_stream(stream_name)?), "cuGraphLaunch")?; }
+        // Stage copy
+        self.memcpy_dtoh_async(dst_pinned, src_device_ptr, bytes, stream_name)?;
+        // Fence
+        self.event_record_on(ev, stream_name)?;
+        Ok(())
+    }
 }
+
 
 
 impl Drop for CudaContext {
@@ -463,5 +557,38 @@ impl Drop for CameraBuffers {
         let _ = unsafe { cuMemFree_v2(self.directions) };
         let _ = unsafe { cuMemFree_v2(self.origins) };
         let _ = unsafe { cuMemFree_v2(self.rand_states) };
+    }
+}
+
+
+pub struct PinnedBuffer {
+    ptr: *mut c_void,
+    len: usize,
+}
+impl PinnedBuffer {
+    pub fn len(&self) -> usize { self.len }
+    pub fn as_ptr(&self) -> *mut c_void { self.ptr }
+    pub fn as_bytes(&self) -> &[u8] {
+        unsafe { slice::from_raw_parts(self.ptr as *const u8, self.len) }
+    }
+    pub fn as_bytes_mut(&mut self) -> &mut [u8] {
+        unsafe { slice::from_raw_parts_mut(self.ptr as *mut u8, self.len) }
+    }
+}
+impl Drop for PinnedBuffer {
+    fn drop(&mut self) {
+        unsafe { let _ = cuMemFreeHost(self.ptr); }
+    }
+}
+
+pub struct CudaEvent {
+    raw: CUevent,
+}
+impl CudaEvent {
+    pub fn raw(&self) -> CUevent { self.raw }
+}
+impl Drop for CudaEvent {
+    fn drop(&mut self) {
+        unsafe { let _ = cuEventDestroy_v2(self.raw); }
     }
 }

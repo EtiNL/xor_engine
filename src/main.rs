@@ -107,8 +107,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     )?;
     let mut fps_counter = FpsCounter::new();
-    let mut host_img: Vec<u8> = vec![0; (width * height * 3) as usize];
-    let img_size = host_img.len() * std::mem::size_of::<u8>();
+
+    // Allows async DtoH memory transfert
+    let bytes = (width * height * 3) as usize;
+    let mut host_img: Vec<u8> = vec![0; bytes];
+    let pinned = cuda_context.alloc_pinned(bytes)?;
+    let ev_done = cuda_context.create_event()?;
 
     // load kernels
     cuda_context.load_kernel("generate_rays")?;
@@ -167,6 +171,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         &mut graph, "generate_rays", &params_generate_rays[..], grid_dim, block_dim)?;
     cuda_context.add_graph_kernel_node(
         &mut graph, "raymarch",      &params_raymarch[..],      grid_dim, block_dim)?;
+    cuda_context.add_dependency(graph, "generate_rays", "raymarch")?;
 
     // Instantiate the CUDA graph
     let graph_exec = cuda_context.instantiate_graph(graph)?;
@@ -276,16 +281,26 @@ fn main() -> Result<(), Box<dyn Error>> {
                         graph_exec, "raymarch",      &params_raymarch[..])?;
             }
 
-            for _ in 0..sample_per_pixel {
+            for _ in 1..sample_per_pixel {
                 cuda_context.launch_graph(graph_exec)?;
             }
-
-            CudaContext::synchronize()?;
-            // Copy the result from GPU to CPU memory
             
             {
                 let cb = world.cam_bufs.as_ref().expect("camera buffers not set");
-                cuda_context.retrieve_tensor(cb.image, &mut host_img, img_size)?;
+                cuda_context.launch_and_stage_image(
+                    graph_exec,
+                    cb.image,           // CUdeviceptr on device
+                    bytes,
+                    &pinned,
+                    "stream1",
+                    &ev_done,
+                )?;
+
+                cuda_context.event_synchronize(&ev_done)?;
+                // Either copy into your Vec<u8>…
+                host_img.copy_from_slice(pinned.as_bytes());
+                // …or render directly from pinned.as_bytes() to SDL if your API allows
+                display.render_texture(&host_img, (width*3) as usize)?;
             
                 if sample_per_pixel > 1 {
 
