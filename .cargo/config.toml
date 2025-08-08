@@ -6,10 +6,10 @@ rustflags = [
 
 [alias]
 gpu-mem-check = [
-  "run",
-  "--features", "gpu_mem_check",
-  "--config",
-  "target.x86_64-unknown-linux-gnu.runner=\"compute-sanitizer --tool memcheck --error-exitcode 1 --require-cuda-init yes\"",
+    "run",
+    "--features","gpu_mem_check",
+    "--config",
+    "target.x86_64-unknown-linux-gnu.runner=\"env LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:/usr/lib/nvidia-cuda-toolkit/compute-sanitizer /usr/local/cuda-12.8/bin/compute-sanitizer --tool memcheck --error-exitcode 1 --require-cuda-init yes\""
 ]
 
 gpu-nsys = [
