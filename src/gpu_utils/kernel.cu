@@ -292,24 +292,24 @@ __device__ Vec3 grad_sdf_box(Vec3 p, Vec3 center, Vec3 u, Vec3 v, Vec3 w, Vec3 h
     return u * g_local.x + v * g_local.y + w * g_local.z;
 }
 
-__device__ float evaluate_sdf(const GpuSdfObjectBase& obj, Vec3 p) {
+__device__ float evaluate_sdf(const GpuSdfObjectBase& obj, Vec3 p, Vec3 center) {
     if (obj.sdf_type == SDF_SPHERE) {
         float radius = obj.params[0];
-        return sdf_sphere(obj.center, radius, p);
+        return sdf_sphere(center, radius, p);
     } else if (obj.sdf_type == SDF_BOX) {
         Vec3 half_extents = Vec3(obj.params[0], obj.params[1], obj.params[2]);
-        return sdf_box(p, obj.center, obj.u, obj.v, obj.w, half_extents);
+        return sdf_box(p, center, obj.u, obj.v, obj.w, half_extents);
     }
     return 1e9;
 }
 
-__device__ Vec3 evaluate_grad_sdf(const GpuSdfObjectBase& obj, Vec3 p) {
+__device__ Vec3 evaluate_grad_sdf(const GpuSdfObjectBase& obj, Vec3 p, Vec3 center) {
     if (obj.sdf_type == SDF_SPHERE) {
         float radius = obj.params[0];
-        return grad_sdf_sphere(obj.center, radius, p);
+        return grad_sdf_sphere(center, radius, p);
     } else if (obj.sdf_type == SDF_BOX) {
         Vec3 half_extents = Vec3(obj.params[0], obj.params[1], obj.params[2]);
-        return grad_sdf_box(p, obj.center, obj.u, obj.v, obj.w, half_extents);
+        return grad_sdf_box(p, center, obj.u, obj.v, obj.w, half_extents);
     }
 }
 
@@ -341,11 +341,12 @@ __device__ Vec3 sample_texture(
 __device__ Vec3 triplanar_sample(
     const GpuMaterial&   mat,
     const GpuSdfObjectBase& obj,
-    Vec3                 p,
-    Vec3                 normal
+    Vec3 p,
+    Vec3 normal,
+    Vec3 center
 ) {
     // local space coords
-    Vec3 d = p - obj.center;
+    Vec3 d = p - center;
     Vec3 local = Vec3(
         Vec3::dot(d, obj.u),
         Vec3::dot(d, obj.v),
@@ -379,11 +380,12 @@ __device__ Vec3 triplanar_sample(
 __device__ Vec3 obj_mapping(
     const GpuMaterial&    mat,
     const GpuSdfObjectBase& obj,
-    Vec3                  p
+    Vec3 p, 
+    Vec3 center
 ) {
     if (obj.sdf_type == SDF_SPHERE) {
         // spherical mapping
-        Vec3 dir = (p - obj.center).normalize();
+        Vec3 dir = (p - center).normalize();
         Vec3 local_dir = Vec3(
             Vec3::dot(dir, obj.u),
             Vec3::dot(dir, obj.v),
@@ -394,8 +396,8 @@ __device__ Vec3 obj_mapping(
         return sample_texture(mat, Vec2(u,v));
     } else {
         // triplanar box
-        Vec3 normal = (evaluate_grad_sdf(obj, p) * -1.0f).normalize();
-        return triplanar_sample(mat, obj, p, normal);
+        Vec3 normal = (evaluate_grad_sdf(obj, p, center) * -1.0f).normalize();
+        return triplanar_sample(mat, obj, p, normal, center);
     }
 }
 
@@ -404,11 +406,11 @@ void raymarch(
     int width, int height,
     GpuCamera* cameras,
     int camera_index,
-    const GpuSdfObjectBase* sdf_objs,
+    const GpuSdfObjectBase* __restrict__ sdf_objs,
     int num_objs,
-    const GpuMaterial* materials,
-    const GpuLight* lights,
-    const GpuSpaceFolding* foldings
+    const GpuMaterial* __restrict__ materials,
+    const GpuLight* __restrict__ lights,
+    const GpuSpaceFolding* __restrict__ foldings
 ) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -439,7 +441,8 @@ void raymarch(
     int   best_j = -1;
 
     // temp copy for per‐object folding
-    GpuSdfObjectBase eval;
+    Vec3 center;
+    Vec3 center_min;
 
     bool hit = false;
     while (steps < max_steps) {
@@ -448,31 +451,30 @@ void raymarch(
 
         for (int j = 0; j < num_objs; ++j) {
             const GpuSdfObjectBase& src = sdf_objs[j];
+            center = src.center;
             if (src.active == 0) continue;
-
-            // copy so we can modify center if folded
-            eval = src;
 
             // folding?
             unsigned fid = src.lattice_folding_id;
             float min_half_thickness = 0.0;
             if (fid != INVALID_FOLDING) {
                 const GpuSpaceFolding& fold = foldings[fid];
-                Vec3 diff = p - eval.center;
+                Vec3 diff = p - center;
                 Vec3 lc   = diff * fold.lattice_basis_inv;
                 Vec3 kf( roundf(lc.x), roundf(lc.y), roundf(lc.z) );
-                eval.center = eval.center + kf * fold.lattice_basis;
+                center = center + kf * fold.lattice_basis;
                 min_half_thickness = fold.min_half_thickness;
             }
 
-            float d = evaluate_sdf(eval, p);
+            float d = evaluate_sdf(src, p, center);
             // if inside, push out
             if (d < 0) {
-                float center_dist = (eval.center - p).length();
+                float center_dist = (center - p).length();
                 d = min_half_thickness - center_dist;
             }
 
             if (d < min_dist) {
+                center_min = center;
                 min_dist = d;
                 best_j   = j;
             }
@@ -494,23 +496,17 @@ void raymarch(
     Vec3 color(0,0,0);
     if (best_j >= 0 && hit) {
         // reconstruct final eval for shading (including fold)
-        eval = sdf_objs[best_j];
+        const GpuSdfObjectBase& eval = sdf_objs[best_j];
         unsigned fid = eval.lattice_folding_id;
-        if (fid != INVALID_FOLDING) {
-            const GpuSpaceFolding& fold = foldings[fid];
-            Vec3 diff = p - eval.center;
-            Vec3 lc   = diff * fold.lattice_basis_inv;
-            Vec3 kf( roundf(lc.x), roundf(lc.y), roundf(lc.z) );
-            eval.center = eval.center + kf * fold.lattice_basis;
-        }
+        
         if (eval.material_id != INVALID_TEXTURE) {
             
             const GpuMaterial& mat = materials[ eval.material_id ];
             // normal
-            Vec3 normal = evaluate_grad_sdf(eval, p) * -1.0f;
+            Vec3 normal = evaluate_grad_sdf(eval, p, center_min) * -1.0f;
 
             if (mat.use_texture) {
-                color = obj_mapping(mat, eval, p);
+                color = obj_mapping(mat, eval, p, center_min);
             } else {
                 color = Vec3(mat.color[0], mat.color[1], mat.color[2]);
             }
