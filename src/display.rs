@@ -34,7 +34,7 @@ impl Display {
         let window = video_sub.window(title, width, height)
                               .position_centered()
                               .build()?;
-        let canvas = window.into_canvas().build()?;
+        let canvas = window.into_canvas().present_vsync().build()?;
 
         // -------- leak des « créateurs » --------
         // 1. TextureCreator
