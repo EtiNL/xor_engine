@@ -131,15 +131,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Create a CUDA graph
     let mut graph = cuda_context.create_cuda_graph()?;
 
-    let mut cam_ptr       : CUdeviceptr = world.gpu_cameras.ptr();
-    let mut cam_index : u32         = world.active_camera_index() as u32;
+    let mut cam_ptr: CUdeviceptr = world.gpu_cameras.ptr();
+    let mut cam_index: u32 = world.active_camera_index() as u32;
 
-    let mut sdf_ptr       : CUdeviceptr = world.gpu_sdf_objects.ptr();
-    let mut num_sdfs  : u32         = world.gpu_sdf_objects.len as u32;
+    let mut sdf_ptr: CUdeviceptr = world.gpu_sdf_objects.ptr();
+    let mut num_sdfs: u32 = world.gpu_sdf_objects.len as u32;
 
-    let mut mat_ptr       : CUdeviceptr = world.gpu_materials.ptr();
-    let mut light_ptr     : CUdeviceptr = world.gpu_lights.ptr();
-    let mut fold_ptr      : CUdeviceptr = world.gpu_foldings.ptr();
+    let mut mat_ptr: CUdeviceptr = world.gpu_materials.ptr();
+    let mut light_ptr: CUdeviceptr = world.gpu_lights.ptr();
+    let mut fold_ptr: CUdeviceptr = world.gpu_foldings.ptr();
 
     let params_generate_rays: [*const c_void; 4] = [
         &width   as *const _ as *const c_void,
@@ -239,6 +239,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                 _ => {}
             }
         }
+
+        rotation_dir_x_axis = 1.0;
+        rotation_dir_y_axis = 1.0;
 
         let now = Instant::now();
         let dt = now.duration_since(last_frame_time).as_secs_f32();

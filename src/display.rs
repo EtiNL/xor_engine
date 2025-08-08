@@ -34,7 +34,7 @@ impl Display {
         let window = video_sub.window(title, width, height)
                               .position_centered()
                               .build()?;
-        let canvas = window.into_canvas().build()?; // add .present_vsync() for 60fps
+        let canvas = window.into_canvas().present_vsync().build()?; // add .present_vsync() for 60fps
 
         // -------- leak des « créateurs » --------
         // 1. TextureCreator
