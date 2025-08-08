@@ -16,5 +16,5 @@ gpu-nsys = [
   "run",
   "--release",
   "--config",
-  "target.x86_64-unknown-linux-gnu.runner=\"nsys profile --force-overwrite=true --stats=true --sample=cpu --trace=cuda,nvtx,osrt -o profiles/latest\"",
+  "target.x86_64-unknown-linux-gnu.runner=\"env MAX_FRAMES=60 nsys profile --force-overwrite=true --stats=true --sample=cpu --trace=cuda,nvtx,osrt -o profiles/latest\"",
 ]

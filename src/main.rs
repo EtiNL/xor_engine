@@ -19,6 +19,9 @@ use crate::ecs::ecs_gpu_interface::ecs_gpu_interface::{SdfType, TextureManager};
 
 
 fn main() -> Result<(), Box<dyn Error>> {
+    let max_frames: Option<u32> = std::env::var("MAX_FRAMES").ok().and_then(|s| s.parse().ok());
+    let mut frame_count: u32 = 0;
+
     // Initialize CUDA context
     let mut cuda_context = CudaContext::new("./src/gpu_utils/kernel.ptx")?;
 
@@ -278,6 +281,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
 
+        rotation_dir_x_axis = 1.0;
+        rotation_dir_y_axis = 1.0;
+
         let now = Instant::now();
         let dt = now.duration_since(last_frame_time).as_secs_f32();
         last_frame_time = now;
@@ -344,6 +350,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         display.present();
 
         if first_image { first_image = false;}
+
+        frame_count += 1;
+        if let Some(n) = max_frames {
+            if frame_count >= n {
+                break 'running;
+            }
+        }
+
     }
 
     CudaContext::free_device_memory(d_image)?;
