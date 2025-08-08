@@ -9,7 +9,7 @@ use std::ffi::c_void;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use std::path::Path;
-use cuda_driver_sys::cuGraphAddDependencies;
+use cuda_driver_sys::{cuGraphAddDependencies, CUdeviceptr};
 
 use display::{Display, FpsCounter};
 use cuda_wrapper::{CudaContext, SceneBuffer, ImageRayAccum, dim3};
@@ -181,14 +181,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         block_dim,
     )?;
 
-    let params_raymarch = vec![
-        &width as *const _ as *const c_void,
-        &height as *const _ as *const c_void,
-        &d_origins as *const _ as *const c_void,
-        &d_directions as *const _ as *const c_void,
-        &scene_buf.ptr() as *const _ as *const c_void,
-        &(scene_buf.max_index_used as i32 +1) as *const _ as *const c_void,
-        &d_ray_accum as *const _ as *const c_void,
+    let mut num_objects: i32 = scene_buf.max_index_used as i32 + 1;
+    let scene_ptr: CUdeviceptr = scene_buf.ptr();
+
+    let params_raymarch: Vec<*const c_void> = vec![
+        &width         as *const _ as *const c_void,
+        &height        as *const _ as *const c_void,
+        &d_origins     as *const _ as *const c_void,
+        &d_directions  as *const _ as *const c_void,
+        &scene_ptr     as *const _ as *const c_void,
+        &num_objects   as *const _ as *const c_void,  // <- no rvalue address
+        &d_ray_accum   as *const _ as *const c_void,
     ];
 
     cuda_context.add_graph_kernel_node(
@@ -286,16 +289,19 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         if first_image || world.update_scene(&mut scene_buf) {
             //reset params scene_buffer pointer that changes when it needs more sloths for sdfobject for the raymarch kernel
-            let new_scene_ptr = scene_buf.ptr();
+            let new_scene_ptr: CUdeviceptr = scene_buf.ptr();
+            let mut new_num_objects: i32 = scene_buf.max_index_used as i32 + 1;
+
             let new_params_raymarch: Vec<*const c_void> = vec![
-                &width                  as *const _ as *const c_void,
-                &height                 as *const _ as *const c_void,
-                &d_origins              as *const _ as *const c_void,
-                &d_directions           as *const _ as *const c_void,
-                &new_scene_ptr          as *const _ as *const c_void,
-                &(scene_buf.max_index_used as i32 +1) as *const _ as *const c_void,
-                &d_ray_accum            as *const _ as *const c_void,
+                &width            as *const _ as *const c_void,
+                &height           as *const _ as *const c_void,
+                &d_origins        as *const _ as *const c_void,
+                &d_directions     as *const _ as *const c_void,
+                &new_scene_ptr    as *const _ as *const c_void,
+                &new_num_objects  as *const _ as *const c_void, // <- stays alive
+                &d_ray_accum      as *const _ as *const c_void,
             ];
+
             cuda_context.exec_kernel_node_set_params(
                 graph_exec,
                 "raymarch",
