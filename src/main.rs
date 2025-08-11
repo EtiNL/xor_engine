@@ -4,19 +4,19 @@ mod ecs;
 
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
-use std::error::Error;
-use std::ffi::c_void;
-use std::sync::{Arc, Mutex};
-use std::time::{Instant, Duration};
-use std::path::Path;
-use cuda_driver_sys::cuGraphAddDependencies;
+use std::{error::Error, ffi::c_void, sync::{Arc, Mutex}, time::Instant, path::Path};
 use cuda_driver_sys::CUdeviceptr;
 
 use display::{Display, FpsCounter};
-use cuda_wrapper::{CudaContext, dim3, CameraBuffers};
-use ecs::ecs::{World, update_rotation, Transform, Camera, SdfBase, MaterialComponent, Rotating, SpaceFolding, Axis};
-use ecs::math_op::math_op::{Vec3, Quat, Mat3};
-use crate::ecs::ecs_gpu_interface::ecs_gpu_interface::{SdfType, TextureManager};
+use cuda_wrapper::{CudaContext, dim3};
+
+use ecs::ecs::World;
+use ecs::ecs::system::update_rotation;
+use ecs::ecs::components::{
+    Transform, Camera, SdfBase, SdfType, MaterialComponent, TextureManager,
+    Rotating, SpaceFolding, Axis,
+};
+use ecs::ecs::{Vec3, Quat, Mat3};
 
 
 fn main() -> Result<(), Box<dyn Error>> {
