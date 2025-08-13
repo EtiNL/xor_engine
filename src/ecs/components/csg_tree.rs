@@ -1,7 +1,18 @@
 use slotmap::{SlotMap, new_key_type};
 new_key_type! { pub struct NodeKey; }
 
+#[derive(Clone, Copy, Debug)]
 pub enum OperationType { Union, Intersection, Difference }
+
+pub fn operation_type_translation(op_type: OperationType) -> u32 {
+    match op_type {
+        OperationType::Union => 0,
+        OperationType::Intersection => 1,
+        OperationType::Difference => 2,
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
 pub enum NodeType { Leaf(Entity), Operation(OperationType) }
 
 pub struct Node {
@@ -17,7 +28,8 @@ pub struct CsgTree {
 
 
 #[derive(Debug)]
-pub enum ConnectError {
+pub enum TreeConstructError {
+    MaxLeafPossibleReached,
     MissingParent,
     MissingChild,
     ParentNotOperation,
@@ -25,22 +37,28 @@ pub enum ConnectError {
     ChildAlreadyParented,
     SelfLoop,
     CycleDetected,
+    TreeNotBinaryOrNotConnected
 }
+
+const MAX_LEAF_NUMBER: usize = 64;
+pub const INVALID_LEAF: u32 = u32::MAX;
+pub const INVALID_COMBINATION: u32 = u32::MAX;
+pub const INVALID_OPERATION: u32 = u32::MAX;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct GpuCsgTree {
-    pub gpu_index_list: , // gpu indeces of sdfBases related to Leaf(Entity)
-    pub combination_list: , // operation order for constructive geometry
-    pub operation_list: , // operation list
+    pub gpu_index_list: [u32; MAX_LEAF_NUMBER],
+    pub combination_list: [u32; MAX_LEAF_NUMBER - 1],
+    pub operation_list: [u32; MAX_LEAF_NUMBER - 1],
 }
 
 impl Default for GpuCsgTree {
     fn default() -> Self {
         GpuCsgTree {
-            position: Vec3::default(),
-            color: Vec3::default(),
-            intensity: 0.0,
+            gpu_index_list: [INVALID_LEAF; MAX_LEAF_NUMBER],
+            combination_list: [INVALID_COMBINATION; MAX_LEAF_NUMBER-1],
+            operation_list: [INVALID_OPERATION; MAX_LEAF_NUMBER-1],
         }
     }
 }
@@ -48,30 +66,36 @@ impl Default for GpuCsgTree {
 impl CsgTree {
     pub fn new() -> Self { Self { nodes: SlotMap::with_key() } }
 
-    pub fn add_node(&mut self, node: Node) -> NodeKey {
-        self.nodes.insert(node)
+    pub fn add_node(&mut self, node: Node) -> Result<NodeKey, TreeConstructError> {
+        if matches!(node.node_type, NodeType::Leaf(_)) {
+            let leaf_count = self.nodes.values().filter(|n| matches!(n.node_type, NodeType::Leaf(_))).count();
+            if leaf_count >= MAX_LEAF_NUMBER {
+                return Err(TreeConstructError::MaxLeafPossibleReached);
+            }
+        }
+        Ok(self.nodes.insert(node))
     }
 
     /// Attach `child` under `parent`:
     /// - Fills the first free child slot (left then right).
     /// - If this creates a pair, sets symmetric sibling pointers.
-    pub fn connect(&mut self, parent: NodeKey, child: NodeKey) -> Result<(), ConnectError> {
-        if parent == child { return Err(ConnectError::SelfLoop); }
+    pub fn connect(&mut self, parent: NodeKey, child: NodeKey) -> Result<(), TreeConstructError> {
+        if parent == child { return Err(TreeConstructError::SelfLoop); }
 
         // 1) Check existence
-        if !self.nodes.contains_key(parent) { return Err(ConnectError::MissingParent); }
-        if !self.nodes.contains_key(child)  { return Err(ConnectError::MissingChild);  }
+        if !self.nodes.contains_key(parent) { return Err(TreeConstructError::MissingParent); }
+        if !self.nodes.contains_key(child)  { return Err(TreeConstructError::MissingChild);  }
 
         // 2) Type & current links
         let (parent_ty, parent_children) = {
             let p = &self.nodes[parent];
             (matches!(p.node_type, NodeType::Operation(_)), p.children)
         };
-        if !parent_ty { return Err(ConnectError::ParentNotOperation); }
+        if !parent_ty { return Err(TreeConstructError::ParentNotOperation); }
 
-        // child must be unattached (or decide to auto-detach if you prefer)
+        // child must be unattached
         if self.nodes[child].parent.is_some() {
-            return Err(ConnectError::ChildAlreadyParented);
+            return Err(TreeConstructError::ChildAlreadyParented);
         }
 
         // 3) Cycle check: ensure `parent` is not inside `child`'s subtree.
@@ -79,7 +103,7 @@ impl CsgTree {
         {
             let mut k = Some(parent);
             while let Some(pk) = k {
-                if pk == child { return Err(ConnectError::CycleDetected); }
+                if pk == child { return Err(TreeConstructError::CycleDetected); }
                 k = self.nodes[pk].parent;
             }
         }
@@ -90,7 +114,7 @@ impl CsgTree {
         } else if parent_children[1].is_none() {
             1
         } else {
-            return Err(ConnectError::ParentFull);
+            return Err(TreeConstructError::ParentFull);
         };
 
         // 5) Set parent's child in a separate scope to satisfy the borrow checker
@@ -173,7 +197,7 @@ impl CsgTree {
         seen.len() == self.nodes.len()
     }
 
-    /// Remove exactly this node:
+    /// Remove exactly one node:
     /// - Unlink from its parent (parent.children[*] = None)
     /// - Clear children's parent+siblings if any (they become new roots)
     /// - Clear the other child's sibling pointer (if any) that pointed to this node
@@ -239,19 +263,37 @@ impl CsgTree {
     }
 
     pub fn remove_subtree(&mut self, k: NodeKey) {
+        // Remember parent & its children before mutation
+        let (parent, parent_children) = if let Some(n) = self.nodes.get(k) {
+            (n.parent, n.parent.and_then(|pk| self.nodes.get(pk).map(|p| p.children)))
+        } else { return; };
+    
         // Detach from parent first
-        if let Some(parent) = self.nodes.get(k).and_then(|n| n.parent) {
+        if let Some(parent) = parent {
             if let Some(p) = self.nodes.get_mut(parent) {
                 for ch in &mut p.children {
                     if *ch == Some(k) { *ch = None; }
                 }
             }
+            // Clean sibling pointer on the other child (if any)
+            if let Some(children) = parent_children {
+                for oc in children {
+                    if let Some(ock) = oc {
+                        if ock != k {
+                            if let Some(ocn) = self.nodes.get_mut(ock) {
+                                if ocn.sibling == Some(k) { ocn.sibling = None; }
+                            }
+                        }
+                    }
+                }
+            }
         }
-        // Post-order deletion
+    
+        // Post-order deletion as you had
         fn drop_rec(tree: &mut CsgTree, k: NodeKey) {
             if let Some(n) = tree.nodes.get(k) {
-                let children = n.children; // copy
-                for c in children {
+                let kids = n.children;
+                for c in kids {
                     if let Some(ck) = c {
                         if tree.nodes.contains_key(ck) {
                             drop_rec(tree, ck);
@@ -264,4 +306,227 @@ impl CsgTree {
         drop_rec(self, k);
     }
 
+    fn get_to_next_leafs(&self, k: NodeKey) -> Option<(NodeKey, NodeKey)> {
+        // We suppose that k is not a leaf
+        let n = &self.nodes[k];
+        if let [Some(c1), Some(c2)] = n.children {
+            let child1 = &self.nodes[c1];
+            let child2 = &self.nodes[c2];
+
+            if matches!(child1.node_type, NodeType::Operation(_)) {
+                return self.get_to_next_leafs(c2)
+            }
+            else if matches!(child2.node_type, NodeType::Operation(_)) {
+                return self.get_to_next_leafs(c1)
+            }
+            else {
+                return Some((c1, c2))
+            }
+        }
+        else if matches!(n.children, [Some(_), None]) || matches!(n.children, [None, Some(_)]){
+            return None
+        }
+        else {
+            if let Some(sibling_node_key) = n.sibling {
+                return Some((k, sibling_node_key))
+            }
+            else {
+                return None
+            }
+        }
+    }
+
+    pub fn to_GpuCsgTree_lists(&self) -> Result<(Vec<NodeKey>, Vec<u32>, Vec<OperationType>), TreeConstructError> {
+
+        if !self.is_binary_and_connected() {
+            return Err(TreeConstructError::TreeNotBinaryOrNotConnected)
+        }
+
+        let mut leaf_keys = vec![];
+        let mut combination_list = vec![];
+        let mut operation_list = vec![];
+
+        let root = self.nodes.iter()
+                            .find_map(|(k, n)| if n.parent.is_none() { Some(k) } else { None })
+                            .expect("binary & connected guarantees a root");
+
+        let (leaf1_key, leaf2_key) = self.get_to_next_leafs(root).ok_or(TreeConstructError::TreeNotBinaryOrNotConnected)?;
+        let mut computed_op: HashSet<NodeKey> = HashSet::new();
+
+        self.rec_to_GpuCsgTree_lists(leaf1_key, &mut leaf_keys, &mut combination_list, &mut operation_list, &mut computed_op, 1);
+
+        return Ok((leaf_keys, combination_list, operation_list))
+    }
+
+    fn rec_to_GpuCsgTree_lists(&self, n: NodeKey,
+                                leaf_keys: &mut Vec<NodeKey>, 
+                                combination_list: &mut Vec<u32>, 
+                                operation_list: &mut Vec<OperationType>,
+                                computed_op: &mut HashSet<NodeKey>,
+                                depth: u32) {
+        
+        let node = &self.nodes[n];
+
+        if let Some(sibling_node_key) = node.sibling {
+            if let Some(parent_node_key) = node.parent {
+                let sibling = &self.nodes[sibling_node_key];
+                let parent = &self.nodes[parent_node_key];
+
+                if matches!(node.node_type, NodeType::Leaf(_)) && matches!(sibling.node_type, NodeType::Leaf(_)) {
+                    leaf_keys.push(n);
+                    leaf_keys.push(sibling_node_key);
+                    combination_list.push(depth);
+
+                    match parent.node_type {
+                        NodeType::Leaf(_) => {}, 
+                        NodeType::Operation(op) => {operation_list.push(op);}
+                    }
+
+                    computed_op.insert(parent_node_key);
+
+                    self.rec_to_GpuCsgTree_lists(parent_node_key,
+                                                leaf_keys, 
+                                                combination_list,
+                                                operation_list,
+                                                computed_op,
+                                                depth);
+                }
+
+                else if matches!(sibling.node_type, NodeType::Leaf(_)){
+                    leaf_keys.push(sibling_node_key);
+                    combination_list.push(depth);
+
+                    match parent.node_type {
+                        NodeType::Leaf(_) => {}, 
+                        NodeType::Operation(op) => {operation_list.push(op);}
+                    }
+
+                    computed_op.insert(parent_node_key);
+
+                    self.rec_to_GpuCsgTree_lists(parent_node_key,
+                                                leaf_keys, 
+                                                combination_list,
+                                                operation_list,
+                                                computed_op,
+                                                depth);
+                }
+
+                else {
+                    if computed_op.contains(&sibling_node_key) {
+                        
+                        let new_depth = depth - 1;
+                        combination_list.push(new_depth);
+
+                        match parent.node_type {
+                            NodeType::Leaf(_) => {}, 
+                            NodeType::Operation(op) => {operation_list.push(op);}
+                        }
+
+                        computed_op.insert(parent_node_key);
+
+                        self.rec_to_GpuCsgTree_lists(parent_node_key,
+                                                    leaf_keys, 
+                                                    combination_list,
+                                                    operation_list,
+                                                    computed_op,
+                                                    new_depth);
+                    }
+                    else {
+                        if let Some((leaf1_node_key, leaf2_node_key)) = self.get_to_next_leafs(n) {
+                            leaf_keys.push(leaf1_node_key);
+                            leaf_keys.push(leaf2_node_key);
+                        
+                            let new_depth = depth + 1;
+                            combination_list.push(new_depth);
+                        
+                            let node = &self.nodes[leaf1_node_key];
+                            if let Some(parent_node_key) = node.parent {
+                                let parent = &self.nodes[parent_node_key];
+                                if let NodeType::Operation(op) = parent.node_type { operation_list.push(op); }
+                                computed_op.insert(parent_node_key);
+                        
+                                self.rec_to_GpuCsgTree_lists(
+                                    parent_node_key,
+                                    leaf_keys,
+                                    combination_list,
+                                    operation_list,
+                                    computed_op,
+                                    new_depth,
+                                );
+                            }
+                        } else {
+                            return;
+                        }
+                    }   
+                }
+            }
+        }
+    }
+}
+
+
+impl World {
+    pub(crate) fn insert_csg_tree(&mut self, e: Entity, tree: CsgTree) {
+        self.csg_trees.insert(e, tree);
+    }
+    pub(crate) fn remove_csg_tree(&mut self, e: Entity) -> Result<bool, Box<dyn Error>> {
+        let mut updated = false;
+
+        if let Some(_slot) = self.csg_tree_gpu_indices.get(e) {
+            self.csg_tree_gpu_indices.free_for(e);
+            updated = true;
+        }
+
+        self.csg_trees.remove(e);
+        Ok(updated)
+    }
+    pub(crate) fn sync_csg_tree(&mut self) -> Result<bool, Box<dyn std::error::Error>> {
+        let mut scene_updated = false;
+    
+        for (_tree, idx) in self.csg_trees.iter_dirty() {
+            let e = Entity { index: idx, generation: self.gens[idx as usize] };
+            let gpu_slot = self.csg_tree_gpu_indices.get_or_allocate_for(e);
+            let tree = self.csg_trees.get(e).unwrap(); // safe
+    
+            if let Ok((node_keys, combinations, operations)) = tree.to_GpuCsgTree_lists() {
+                // fixed-size GPU arrays, prefilled with sentinels
+                let mut gpu_index_list   = [INVALID_LEAF;        MAX_LEAF_NUMBER];
+                let mut combination_list = [INVALID_COMBINATION; MAX_LEAF_NUMBER - 1];
+                let mut operation_list   = [INVALID_OPERATION;   MAX_LEAF_NUMBER - 1];
+    
+                // fill gpu_index_list from leaf node_keys
+                let mut i = 0usize;
+                for nk in node_keys {
+                    let node = &tree.nodes[nk];
+                    if let NodeType::Leaf(ent) = node.node_type {
+                        if let Some(sdf_slot) = self.sdf_gpu_indices.get(ent) {
+                            if i < gpu_index_list.len() {
+                                gpu_index_list[i] = sdf_slot as u32;
+                                i += 1;
+                            }
+                        }
+                    }
+                }
+    
+                // copy combinations (u32s) and encoded operations (u32s)
+                for (i, comb) in combinations.iter().copied().enumerate() {
+                    if i < combination_list.len() { combination_list[i] = comb; }
+                }
+                for (i, op) in operations.iter().copied().enumerate() {
+                    if i < operation_list.len() { operation_list[i] = operation_type_translation(op); }
+                }
+    
+                let gpu_struct = GpuCsgTree {
+                    gpu_index_list,
+                    combination_list,
+                    operation_list,
+                };
+    
+                self.gpu_csg_trees.push(gpu_slot, &gpu_struct)?;
+                scene_updated = true;
+            }
+        }
+    
+        Ok(scene_updated)
+    }
 }

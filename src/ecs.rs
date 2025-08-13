@@ -16,7 +16,7 @@ pub mod ecs {
 
     use self::components::{
         Camera, SdfBase, MaterialComponent, LightComponent, SpaceFolding, Transform, Rotating,
-        TextureManager, GpuCamera, GpuSdfObjectBase, GpuMaterial, GpuLight, GpuSpaceFolding,
+        TextureManager, GpuCamera, GpuSdfObjectBase, GpuMaterial, GpuLight, GpuSpaceFolding, CsgTree, GpuCsgTree,
     };
 
     // Entity
@@ -147,6 +147,7 @@ pub mod ecs {
 
         // component pools
         cameras: SparseSet<Camera>,
+        csg_trees: SparseSet<CsgTree>,
         sdf_bases: SparseSet<SdfBase>,
         materials: SparseSet<MaterialComponent>,
         lights: SparseSet<LightComponent>,
@@ -156,6 +157,7 @@ pub mod ecs {
 
         // GPU-side index maps
         camera_gpu_indices: GpuIndexMap,
+        csg_tree_gpu_indices: GpuIndexMap,
         sdf_gpu_indices: GpuIndexMap,
         material_gpu_indices: GpuIndexMap,
         light_gpu_indices: GpuIndexMap,
@@ -163,6 +165,7 @@ pub mod ecs {
 
         // GPU buffers
         pub gpu_cameras: GpuBuffer<GpuCamera>,
+        pub gpu_csg_trees: GpuBuffer<GpuCsgTree>,
         pub gpu_sdf_objects: GpuBuffer<GpuSdfObjectBase>,
         pub  gpu_materials: GpuBuffer<GpuMaterial>,
         pub gpu_lights: GpuBuffer<GpuLight>,
@@ -182,6 +185,7 @@ pub mod ecs {
                 entities_to_remove_from_gpu: vec![],
                 
                 cameras: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
+                csg_trees: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
                 sdf_bases: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
                 materials: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
                 lights: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
@@ -190,6 +194,7 @@ pub mod ecs {
                 rotatings: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
                 
                 camera_gpu_indices: GpuIndexMap::new(),
+                csg_tree_gpu_indices: GpuIndexMap::new(),
                 sdf_gpu_indices: GpuIndexMap::new(),
                 material_gpu_indices: GpuIndexMap::new(),
                 light_gpu_indices: GpuIndexMap::new(),
@@ -198,6 +203,8 @@ pub mod ecs {
                 gpu_cameras:     GpuBuffer::<GpuCamera>::new(2)?,
                 cam_bufs: None,
 
+
+                gpu_csg_trees:   GpuBuffer::<GpuCsgTree>::new(8)?,
                 gpu_sdf_objects: GpuBuffer::<GpuSdfObjectBase>::new(8)?,
                 gpu_materials:   GpuBuffer::<GpuMaterial>::new(8)?,
                 gpu_lights:      GpuBuffer::<GpuLight>::new(8)?,
@@ -251,6 +258,7 @@ pub mod ecs {
                 scene_updated |= self.remove_space_folding(e);
                 scene_updated |= self.remove_transform(e);
                 scene_updated |= self.remove_rotating(e);
+                scene_updated |= self.remove_csg_tree(e)?;
             }
 
             scene_updated |= self.sync_camera()?;
@@ -258,9 +266,12 @@ pub mod ecs {
             scene_updated |= self.sync_light()?;
             scene_updated |= self.sync_space_folding()?;
             scene_updated |= self.sync_sdf_base()?; // last sync because it need all the attached components sync first
+            scene_updated |= self.sync_csg_tree()?;
+
         
             // 6. Clear dirty flags (dont move it to the differents sync functions because sync_sdf_base needs dirty flags to sync)
             self.cameras.clear_dirty_flags();
+            self.csg_trees.clear_dirty_flags();
             self.space_foldings.clear_dirty_flags();
             self.materials.clear_dirty_flags();
             self.lights.clear_dirty_flags();
@@ -294,6 +305,7 @@ pub mod ecs {
         include!("ecs/components/light.rs");
         include!("ecs/components/space_folding.rs");
         include!("ecs/components/rotating.rs");
+        include!("ecs/components/csg_tree.rs");
     }
 
     /* ===== systems under ecs::system ===== */
