@@ -141,6 +141,8 @@ struct GpuCsgTree {
 
     unsigned int material_id;
     unsigned int tree_folding_id;
+    unsigned int leaf_count;
+    unsigned int pair_count;
     unsigned int active;
 };
 
@@ -430,59 +432,33 @@ struct CsgCombineResult {
 
 __device__ __forceinline__
 CsgCombineResult combine_distances(
-    float*              distances,            // in/out, size >= MAX_LEAFS
-    unsigned int*       leaf_indices,         // in/out, size >= MAX_LEAFS
-    const unsigned int* combination_indices,  // [L0,R0, L1,R1, ...], size >= 2*(MAX_LEAFS-1)
-    const unsigned int* operation_list        // encoded CsgOperation per pair
+    float*              distances,
+    unsigned int*       leaf_indices,
+    const unsigned int* combination_indices,
+    const unsigned int* operation_list,
+    int                 pair_count
 ) {
-    // gradient sign that flows with the "winner" at each pair
+
     float grad_sign_buf[MAX_LEAFS];
+
     #pragma unroll
     for (int i = 0; i < MAX_LEAFS; ++i) grad_sign_buf[i] = 1.0f;
 
-    // determine valid pair count (stop when left is INVALID_LEAF)
-    int pair_count = 0;
-    for (; pair_count < (MAX_LEAFS - 1); ++pair_count) {
-        if (combination_indices[2 * pair_count + 0] == INVALID_LEAF) break;
-    }
-
+    #pragma unroll 1
     for (int j = 0; j < pair_count; ++j) {
         unsigned int L = combination_indices[2*j + 0];
         unsigned int R = combination_indices[2*j + 1];
-        if (L == INVALID_LEAF || R == INVALID_LEAF) break;
 
         float dl = distances[L], dr = distances[R];
         float gl = grad_sign_buf[L], gr = grad_sign_buf[R];
-
         CsgOperation op = static_cast<CsgOperation>(operation_list[j]);
 
         if (op == UNION) {
-            // min(dL, dR)
-            if (dr < dl) {
-                distances[L]    = dr;
-                leaf_indices[L]  = leaf_indices[R];
-                grad_sign_buf[L] = gr;
-            }
-            // else keep left as-is
+            if (dr < dl) { distances[L] = dr; leaf_indices[L] = leaf_indices[R]; grad_sign_buf[L] = gr; }
         } else if (op == INTERSECTION) {
-            // max(dL, dR)
-            if (dr > dl) {
-                distances[L]    = dr;
-                leaf_indices[L]  = leaf_indices[R];
-                grad_sign_buf[L] = gr;
-            }
-            // else keep left as-is
-        } else if (op == DIFFERENCE) {
-            // d = max(dA, -dB)
-            if (dl > -dr) {
-                // keep left as-is
-            } else {
-                distances[L]    = -dr;
-                leaf_indices[L]  = leaf_indices[R];
-                grad_sign_buf[L] = -gr;
-            }
-        } else {
-            // unknown op → do nothing
+            if (dr > dl) { distances[L] = dr; leaf_indices[L] = leaf_indices[R]; grad_sign_buf[L] = gr; }
+        } else { // DIFFERENCE
+            if (!(dl > -dr)) { distances[L] = -dr; leaf_indices[L] = leaf_indices[R]; grad_sign_buf[L] = -gr; }
         }
     }
 
@@ -582,70 +558,78 @@ void raymarch(
 
         for (int j = 0; j < num_trees; ++j) {
             const GpuCsgTree& src_tree = csg_trees[j];
+
+            int leaf_count = src_tree.leaf_count;
+            int pair_count = src_tree.pair_count;
+            
             unsigned int tree_folding_id = src_tree.tree_folding_id;
             unsigned int tree_material_id = src_tree.material_id;
             
             float distances[MAX_LEAFS];
-            unsigned int sdf_indices[MAX_LEAFS];
             unsigned int leaf_indices[MAX_LEAFS];
-            Vec3 centers[MAX_LEAFS];
-            
-            for (int k = 0; k < MAX_LEAFS; ++k) {
+
+            // Fill only up to leaf_count
+            for (int k = 0; k < leaf_count; ++k) {
                 unsigned int sdf_id = src_tree.sdf_base_index_list[k];
-                sdf_indices[k] = sdf_id;
                 leaf_indices[k] = k;
 
-                if (sdf_id == INVALID_LEAF) {break;} // no more leafs
                 const GpuSdfObjectBase& src = sdf_objs[sdf_id];
-                center = src.center;
+                Vec3 c = src.center;
 
-                // folding?
                 unsigned fid_sdf = src.lattice_folding_id;
-                float min_half_thickness = 0.0;
+                float min_half_thickness = 0.0f;
                 if (fid_sdf != INVALID_FOLDING) {
                     const GpuSpaceFolding& fold = foldings[fid_sdf];
-                    Vec3 diff = p - center;
+                    Vec3 diff = p - c;                             // <-- was p - center
                     Vec3 lc   = diff * fold.lattice_basis_inv;
-                    float kx = (fold.active_mask & 1u) ? roundf(lc.x) : 0.0f;
-                    float ky = (fold.active_mask & 2u) ? roundf(lc.y) : 0.0f;
-                    float kz = (fold.active_mask & 4u) ? roundf(lc.z) : 0.0f;
-                    Vec3 kf(kx, ky, kz);
-                    center = center + kf * fold.lattice_basis;
+                    Vec3 kf( (fold.active_mask & 1u) ? roundf(lc.x) : 0.0f,
+                            (fold.active_mask & 2u) ? roundf(lc.y) : 0.0f,
+                            (fold.active_mask & 4u) ? roundf(lc.z) : 0.0f );
+                    c = c + kf * fold.lattice_basis;               // <-- was center = ...
                     min_half_thickness = fold.min_half_thickness;
                 }
 
-                float d_sdf = evaluate_sdf(src, p, center);
+                float d = evaluate_sdf(src, p, c);
+                if (d < 0) {
+                    float center_dist = (c - p).length();
+                    d = min_half_thickness - center_dist;
+                }
+                distances[k] = d;
+            }
 
-                // if inside, push out
-                if (d_sdf < 0) {
-                    float center_dist = (center - p).length();
-                    d_sdf = min_half_thickness - center_dist;
+            CsgCombineResult comb = combine_distances(
+                distances, leaf_indices,
+                src_tree.combination_indices,
+                src_tree.operation_list,
+                pair_count
+            );
+
+            float d = comb.d;
+            if (d < min_dist) {
+                unsigned int leaf_pos = comb.leaf_id;                       // position in the leaf array
+                unsigned int sdf_id   = src_tree.sdf_base_index_list[leaf_pos]; // <-- no sdf_indices[]
+
+                // recompute center only for the winning leaf
+                const GpuSdfObjectBase& wsrc = sdf_objs[sdf_id];
+                Vec3 wcenter = wsrc.center;
+                if (wsrc.lattice_folding_id != INVALID_FOLDING) {
+                    const GpuSpaceFolding& fold = foldings[wsrc.lattice_folding_id];
+                    Vec3 diff = p - wcenter;
+                    Vec3 lc   = diff * fold.lattice_basis_inv;
+                    Vec3 kf( (fold.active_mask & 1u) ? roundf(lc.x) : 0.0f,
+                            (fold.active_mask & 2u) ? roundf(lc.y) : 0.0f,
+                            (fold.active_mask & 4u) ? roundf(lc.z) : 0.0f );
+                    wcenter = wcenter + kf * fold.lattice_basis;
                 }
 
-                centers[k] = center;
-                distances[k] = d_sdf;
-
-            }
-
-            CsgCombineResult comb =combine_distances(distances, leaf_indices,
-                                                    src_tree.combination_indices,
-                                                    src_tree.operation_list);
-            
-            float d = comb.d;
-            unsigned int leaf_id = comb.leaf_id;
-
-            if (d < min_dist) {
-                unsigned int leaf_id = comb.leaf_id;
-
-                center_min = centers[leaf_id];
-                min_dist = d;
-                best_j   = sdf_indices[leaf_id];
-                best_tree_folding = tree_folding_id;
+                center_min         = wcenter;  // for shading/grad and UVs
+                min_dist           = d;
+                best_j             = (int)sdf_id;
+                best_tree_folding  = tree_folding_id;
                 best_tree_material = tree_material_id;
-                best_grad_sign = comb.grad_sign;
+                best_grad_sign     = comb.grad_sign;
             }
         }
-
         if (best_j < 0 || min_dist < eps || total_dist > max_dist) {
                 if (min_dist < eps) {
                     hit = true;

@@ -54,6 +54,8 @@ pub struct GpuCsgTree {
     pub operation_list: [u32; MAX_LEAF_NUMBER - 1],
     pub material_id: u32,
     pub tree_folding_id: u32,
+    pub leaf_count: u32,   // <-- new
+    pub pair_count: u32,
     pub active: u32,
 }
 
@@ -65,6 +67,8 @@ impl Default for GpuCsgTree {
             operation_list: [INVALID_OPERATION; MAX_LEAF_NUMBER-1],
             material_id: INVALID_MATERIAL,
             tree_folding_id: INVALID_FOLDING,
+            leaf_count: 0,
+            pair_count: 0,
             active: 0,
         }
     }
@@ -492,6 +496,10 @@ impl World {
             let gpu_slot = self.csg_tree_gpu_indices.get_or_allocate_for(e);
     
             if let Ok((node_keys, combination_indices, operation_list)) = tree.to_GpuCsgTree_lists() {
+                println!("{:?}", node_keys);
+                println!("{:?}", combination_indices);
+                println!("{:?}", operation_list);
+
                 // ---- gpu_index_list (fixed [u32; MAX_LEAF_NUMBER]) ----
                 let mut gpu_index_list = [INVALID_LEAF; MAX_LEAF_NUMBER];
                 for (i, nk) in node_keys.iter().enumerate() {
@@ -527,6 +535,9 @@ impl World {
                 .get(e)
                 .map(|i| i as u32)
                 .unwrap_or(INVALID_FOLDING);
+
+                let leaf_count = node_keys.len().min(MAX_LEAF_NUMBER) as u32;
+                let pair_count = (combination_indices.len() / 2).min(MAX_LEAF_NUMBER - 1) as u32;
     
                 let gpu_struct = GpuCsgTree {
                     gpu_index_list,
@@ -534,6 +545,8 @@ impl World {
                     operation_list: op_list,
                     material_id,
                     tree_folding_id,
+                    leaf_count,
+                    pair_count,
                     active: 1,
                 };
     
