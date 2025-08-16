@@ -41,7 +41,7 @@ pub enum TreeConstructError {
     TreeNotBinaryOrNotConnected
 }
 
-const MAX_LEAF_NUMBER: usize = 4;
+const MAX_LEAF_NUMBER: usize = 32;
 pub const INVALID_LEAF: u32 = 0xFFFFFFFF;
 pub const INVALID_COMBINATION: u32 = u32::MAX;
 pub const INVALID_OPERATION: u32 = u32::MAX;
