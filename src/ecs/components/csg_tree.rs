@@ -53,6 +53,7 @@ pub struct GpuCsgTree {
     pub combination_indices: [u32; 2*(MAX_LEAF_NUMBER - 1)],
     pub operation_list: [u32; MAX_LEAF_NUMBER - 1],
     pub material_id: u32,
+    pub tree_folding_id: u32,
     pub active: u32,
 }
 
@@ -63,6 +64,7 @@ impl Default for GpuCsgTree {
             combination_indices: [INVALID_COMBINATION; 2*(MAX_LEAF_NUMBER-1)],
             operation_list: [INVALID_OPERATION; MAX_LEAF_NUMBER-1],
             material_id: INVALID_MATERIAL,
+            tree_folding_id: INVALID_FOLDING,
             active: 0,
         }
     }
@@ -357,168 +359,95 @@ impl CsgTree {
         }
     }
 
-    pub fn to_GpuCsgTree_lists(&self) -> Result<(Vec<NodeKey>, Vec<u32>, Vec<OperationType>), TreeConstructError> {
-
+    pub fn to_GpuCsgTree_lists(&self)
+        -> Result<(Vec<NodeKey>, Vec<u32>, Vec<OperationType>), TreeConstructError>
+    {
+        // 1) Sanity
         if !self.is_binary_and_connected() {
-            return Err(TreeConstructError::TreeNotBinaryOrNotConnected)
+            return Err(TreeConstructError::TreeNotBinaryOrNotConnected);
         }
 
-        let mut leaf_keys = vec![];
-        let mut combination_list = vec![];
-        let mut operation_list = vec![];
-
+        // 2) Find root (unique because binary+connected)
         let root = self.nodes.iter()
-                            .find_map(|(k, n)| if n.parent.is_none() { Some(k) } else { None })
-                            .expect("binary & connected guarantees a root");
+            .find_map(|(k, n)| if n.parent.is_none() { Some(k) } else { None })
+            .expect("root must exist");
 
-        let (leaf1_key, leaf2_key) = self.get_to_next_leafs(root).ok_or(TreeConstructError::TreeNotBinaryOrNotConnected)?;
-        let mut computed_op: HashSet<NodeKey> = HashSet::new();
-
-        self.rec_to_GpuCsgTree_lists(leaf1_key, &mut leaf_keys, &mut combination_list, &mut operation_list, &mut computed_op, 1);
-
-        fn change_combination_list_to_indices(combination_list: Vec<u32>, number_of_leafs: usize) -> Vec<u32> {
-            let mut combination_indices: Vec<u32> = Vec::new();
-
-            assert!(number_of_leafs >= 2, "need at least two leaves");
-        
-            // 0 = used/left boundary, 1 = available
-            let mut indices_to_compare: Vec<u8> = Vec::with_capacity(number_of_leafs);
-            indices_to_compare.extend(std::iter::repeat(1u8).take(number_of_leafs));
-        
-            for link_number in combination_list {
-                let mut first_nonzero_index: usize = 0;
-                while indices_to_compare[first_nonzero_index] == 0 {
-                    first_nonzero_index += 1;
-                }
-                let mut id_rigth: usize = first_nonzero_index;
-                let mut counter: u32 = 0;
-        
-                while counter < link_number {
-                    id_rigth += 1;
-                    if indices_to_compare[id_rigth] != 0 {
-                        counter += 1;
-                    }
-                }
-        
-                combination_indices.push((id_rigth as u32) - 1);
-                combination_indices.push(id_rigth as u32);
-        
-                indices_to_compare[id_rigth] = 0;
-            }
-        
-            combination_indices
-        }
-
-        let combination_indices: Vec<u32> = change_combination_list_to_indices(combination_list, leaf_keys.len());
-
-        return Ok((leaf_keys, combination_indices, operation_list))
-    }
-
-    fn rec_to_GpuCsgTree_lists(&self, n: NodeKey,
-                                leaf_keys: &mut Vec<NodeKey>, 
-                                combination_list: &mut Vec<u32>, 
-                                operation_list: &mut Vec<OperationType>,
-                                computed_op: &mut HashSet<NodeKey>,
-                                depth: u32) {
-        
-        let node = &self.nodes[n];
-
-        if let Some(sibling_node_key) = node.sibling {
-            if let Some(parent_node_key) = node.parent {
-                let sibling = &self.nodes[sibling_node_key];
-                let parent = &self.nodes[parent_node_key];
-
-                if matches!(node.node_type, NodeType::Leaf(_)) && matches!(sibling.node_type, NodeType::Leaf(_)) {
-                    leaf_keys.push(n);
-                    leaf_keys.push(sibling_node_key);
-                    combination_list.push(depth);
-
-                    match parent.node_type {
-                        NodeType::Leaf(_) => {}, 
-                        NodeType::Operation(op) => {operation_list.push(op);}
-                    }
-
-                    computed_op.insert(parent_node_key);
-
-                    self.rec_to_GpuCsgTree_lists(parent_node_key,
-                                                leaf_keys, 
-                                                combination_list,
-                                                operation_list,
-                                                computed_op,
-                                                depth);
-                }
-
-                else if matches!(sibling.node_type, NodeType::Leaf(_)){
-                    leaf_keys.push(sibling_node_key);
-                    combination_list.push(depth);
-
-                    match parent.node_type {
-                        NodeType::Leaf(_) => {}, 
-                        NodeType::Operation(op) => {operation_list.push(op);}
-                    }
-
-                    computed_op.insert(parent_node_key);
-
-                    self.rec_to_GpuCsgTree_lists(parent_node_key,
-                                                leaf_keys, 
-                                                combination_list,
-                                                operation_list,
-                                                computed_op,
-                                                depth);
-                }
-
-                else {
-                    if computed_op.contains(&sibling_node_key) {
-                        
-                        let new_depth = depth - 1;
-                        combination_list.push(new_depth);
-
-                        match parent.node_type {
-                            NodeType::Leaf(_) => {}, 
-                            NodeType::Operation(op) => {operation_list.push(op);}
-                        }
-
-                        computed_op.insert(parent_node_key);
-
-                        self.rec_to_GpuCsgTree_lists(parent_node_key,
-                                                    leaf_keys, 
-                                                    combination_list,
-                                                    operation_list,
-                                                    computed_op,
-                                                    new_depth);
-                    }
-                    else {
-                        if let Some((leaf1_node_key, leaf2_node_key)) = self.get_to_next_leafs(n) {
-                            leaf_keys.push(leaf1_node_key);
-                            leaf_keys.push(leaf2_node_key);
-                        
-                            let new_depth = depth + 1;
-                            combination_list.push(new_depth);
-                        
-                            let node = &self.nodes[leaf1_node_key];
-                            if let Some(parent_node_key) = node.parent {
-                                let parent = &self.nodes[parent_node_key];
-                                if let NodeType::Operation(op) = parent.node_type { operation_list.push(op); }
-                                computed_op.insert(parent_node_key);
-                        
-                                self.rec_to_GpuCsgTree_lists(
-                                    parent_node_key,
-                                    leaf_keys,
-                                    combination_list,
-                                    operation_list,
-                                    computed_op,
-                                    new_depth,
-                                );
-                            }
-                        } else {
-                            return;
-                        }
-                    }   
+        // 3) In-order leaf order -> defines initial positions 0..N-1
+        fn inorder_leaves(tree: &CsgTree, k: NodeKey, out: &mut Vec<NodeKey>) {
+            let n = &tree.nodes[k];
+            match n.node_type {
+                NodeType::Leaf(_) => out.push(k),
+                NodeType::Operation(_) => {
+                    if let Some(lc) = n.children[0] { inorder_leaves(tree, lc, out); }
+                    if let Some(rc) = n.children[1] { inorder_leaves(tree, rc, out); }
                 }
             }
         }
+        let mut leaf_keys: Vec<NodeKey> = Vec::new();
+        inorder_leaves(self, root, &mut leaf_keys);
+        let n_leaves = leaf_keys.len();
+        if n_leaves < 2 {
+            return Err(TreeConstructError::TreeNotBinaryOrNotConnected);
+        }
+
+        // Map: leaf NodeKey -> current position in the frontier
+        use std::collections::HashMap;
+        let mut pos: HashMap<NodeKey, usize> =
+            leaf_keys.iter().enumerate().map(|(i, &k)| (k, i)).collect();
+
+        // Frontier blocks: start as 0..N-1 (each leaf is a block)
+        let mut avail: Vec<u32> = (0..n_leaves as u32).collect();
+
+        // Outputs
+        let mut pairs: Vec<u32> = Vec::with_capacity(2 * (n_leaves - 1));
+        let mut ops:   Vec<OperationType> = Vec::with_capacity(n_leaves - 1);
+
+        // 4) Post-order emission: returns the *current* frontier index of the node’s block
+        fn emit(
+            tree: &CsgTree,
+            k: NodeKey,
+            pos: &mut HashMap<NodeKey, usize>,
+            avail: &mut Vec<u32>,
+            pairs: &mut Vec<u32>,
+            ops: &mut Vec<OperationType>,
+        ) -> usize {
+            let n = &tree.nodes[k];
+            match n.node_type {
+                NodeType::Leaf(_) => pos[&k],
+                NodeType::Operation(op) => {
+                    let l = n.children[0].expect("binary op needs left child");
+                    let r = n.children[1].expect("binary op needs right child");
+
+                    // Reduce left subtree to one block
+                    let li = emit(tree, l, pos, avail, pairs, ops);
+                    // Reduce right subtree to one block (to the right of li)
+                    let ri = emit(tree, r, pos, avail, pairs, ops);
+
+                    // Emit final pair for this operation: (avail[li], avail[ri])
+                    pairs.push(avail[li]);
+                    pairs.push(avail[ri]);
+                    ops.push(op);
+
+                    // Merge blocks in the frontier: remove the right block
+                    avail.remove(ri);
+
+                    // After removal, any positions > ri shift left by 1.
+                    // Update all stored positions accordingly.
+                    for v in pos.values_mut() {
+                        if *v == ri { *v = li; }          // right subtree now represented by left slot
+                        else if *v > ri { *v -= 1; }      // shift
+                    }
+                    li
+                }
+            }
+        }
+
+        let _root_idx = emit(self, root, &mut pos, &mut avail, &mut pairs, &mut ops);
+
+        Ok((leaf_keys, pairs, ops))
     }
 
+    
     pub fn contains_entity(&self, e: Entity) -> bool {
         self.leaf_entities.contains(&e)
     }
@@ -562,32 +491,29 @@ impl World {
 
             let gpu_slot = self.csg_tree_gpu_indices.get_or_allocate_for(e);
     
-            if let Ok((node_keys, combinations, operations)) = tree.to_GpuCsgTree_lists() {
-                // fixed-size GPU arrays, prefilled with sentinels
-                let mut gpu_index_list   = [INVALID_LEAF;        MAX_LEAF_NUMBER];
-                let mut combination_indices = [INVALID_COMBINATION; 2*(MAX_LEAF_NUMBER - 1)];
-                let mut operation_list   = [INVALID_OPERATION;   MAX_LEAF_NUMBER - 1];
-    
-                // fill gpu_index_list from leaf node_keys
-                let mut i = 0usize;
-                for nk in node_keys {
-                    let node = &tree.nodes[nk];
+            if let Ok((node_keys, combination_indices, operation_list)) = tree.to_GpuCsgTree_lists() {
+                // ---- gpu_index_list (fixed [u32; MAX_LEAF_NUMBER]) ----
+                let mut gpu_index_list = [INVALID_LEAF; MAX_LEAF_NUMBER];
+                for (i, nk) in node_keys.iter().enumerate() {
+                    if i >= gpu_index_list.len() { break; }
+                    let node = &tree.nodes[*nk];
                     if let NodeType::Leaf(ent) = node.node_type {
                         if let Some(sdf_slot) = self.sdf_gpu_indices.get(ent) {
-                            if i < gpu_index_list.len() {
-                                gpu_index_list[i] = sdf_slot as u32;
-                                i += 1;
-                            }
+                            gpu_index_list[i] = sdf_slot as u32;
                         }
                     }
                 }
-    
-                // copy combinations (u32s) and encoded operations (u32s)
-                for (i, comb) in combinations.iter().copied().enumerate() {
-                    if i < combination_indices.len() { combination_indices[i] = comb; }
+            
+                // ---- combination_indices (fixed [u32; 2*(MAX_LEAF_NUMBER-1)]) ----
+                let mut comb_idx = [INVALID_COMBINATION; 2 * (MAX_LEAF_NUMBER - 1)];
+                for (i, &v) in combination_indices.iter().enumerate().take(comb_idx.len()) {
+                    comb_idx[i] = v;
                 }
-                for (i, op) in operations.iter().copied().enumerate() {
-                    if i < operation_list.len() { operation_list[i] = operation_type_translation(op); }
+            
+                // ---- operation_list (fixed [u32; MAX_LEAF_NUMBER-1]) ----
+                let mut op_list = [INVALID_OPERATION; MAX_LEAF_NUMBER - 1];
+                for (i, &op) in operation_list.iter().enumerate().take(op_list.len()) {
+                    op_list[i] = operation_type_translation(op);
                 }
 
                 let material_id = self
@@ -595,12 +521,19 @@ impl World {
                 .get(e)
                 .map(|i| i as u32)
                 .unwrap_or(INVALID_MATERIAL);
+
+                let tree_folding_id = self
+                .folding_gpu_indices
+                .get(e)
+                .map(|i| i as u32)
+                .unwrap_or(INVALID_FOLDING);
     
                 let gpu_struct = GpuCsgTree {
                     gpu_index_list,
-                    combination_indices,
-                    operation_list,
+                    combination_indices: comb_idx,
+                    operation_list: op_list,
                     material_id,
+                    tree_folding_id,
                     active: 1,
                 };
     
