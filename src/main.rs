@@ -73,11 +73,85 @@ fn main() -> Result<(), Box<dyn Error>> {
         use_texture: false,
     });
     // Space folding
-    world.insert_space_folding(cube_ent, SpaceFolding::new_2d(Mat3::Id * 10.0, Axis::U, Axis::W));
+    // world.insert_space_folding(cube_ent, SpaceFolding::new_2d(Mat3::Id * 10.0, Axis::U, Axis::W));
     // 3) Rotation
     world.insert_rotating(cube_ent, Rotating {
         speed_deg_per_sec: 30.0,
     });
+
+    //=========================================================================================================
+
+    let mut cube_ent = world.spawn();
+    world.insert_transform(cube_ent, Transform {
+        position: Vec3::new(1.0, 0.0, -10.0),
+        rotation: Quat::identity(),
+    });
+    // 1) SDF shape
+    world.insert_sdf_base(cube_ent, SdfBase {
+        sdf_type: SdfType::Cube,
+        params: [1.0, 1.0, 1.0], // half-extents
+    });
+    // 2) Material
+    let cube_tex = tex_mgr.load(Path::new("./src/textures/lines_texture.png"))?;
+    world.insert_material(cube_ent, MaterialComponent {
+        color: [0.0, 0.5, 0.5],
+        texture: Some(cube_tex),
+        use_texture: false,
+    });
+    // Space folding
+    // world.insert_space_folding(cube_ent, SpaceFolding::new_2d(Mat3::Id * 10.0, Axis::U, Axis::W));
+    // 3) Rotation
+    world.insert_rotating(cube_ent, Rotating {
+        speed_deg_per_sec: 30.0,
+    });
+    let mut cube_ent = world.spawn();
+    world.insert_transform(cube_ent, Transform {
+        position: Vec3::new(0.0, -1.0, -10.0),
+        rotation: Quat::identity(),
+    });
+    // 1) SDF shape
+    world.insert_sdf_base(cube_ent, SdfBase {
+        sdf_type: SdfType::Cube,
+        params: [1.0, 1.0, 1.0], // half-extents
+    });
+    // 2) Material
+    let cube_tex = tex_mgr.load(Path::new("./src/textures/lines_texture.png"))?;
+    world.insert_material(cube_ent, MaterialComponent {
+        color: [0.0, 0.5, 0.5],
+        texture: Some(cube_tex),
+        use_texture: false,
+    });
+    // Space folding
+    // world.insert_space_folding(cube_ent, SpaceFolding::new_2d(Mat3::Id * 10.0, Axis::U, Axis::W));
+    // 3) Rotation
+    world.insert_rotating(cube_ent, Rotating {
+        speed_deg_per_sec: 30.0,
+    });
+    let mut cube_ent = world.spawn();
+    world.insert_transform(cube_ent, Transform {
+        position: Vec3::new(0.0, 1.0, -10.0),
+        rotation: Quat::identity(),
+    });
+    // 1) SDF shape
+    world.insert_sdf_base(cube_ent, SdfBase {
+        sdf_type: SdfType::Cube,
+        params: [1.0, 1.0, 1.0], // half-extents
+    });
+    // 2) Material
+    let cube_tex = tex_mgr.load(Path::new("./src/textures/lines_texture.png"))?;
+    world.insert_material(cube_ent, MaterialComponent {
+        color: [0.0, 0.5, 0.5],
+        texture: Some(cube_tex),
+        use_texture: false,
+    });
+    // Space folding
+    // world.insert_space_folding(cube_ent, SpaceFolding::new_2d(Mat3::Id * 10.0, Axis::U, Axis::W));
+    // 3) Rotation
+    world.insert_rotating(cube_ent, Rotating {
+        speed_deg_per_sec: 30.0,
+    });
+    
+    //===========================================================================================================
 
     // — SPHERE — 
     let sphere_ent = world.spawn();
@@ -98,7 +172,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         use_texture: false,
     });
     // Lattice‐folding
-    world.insert_space_folding(sphere_ent, SpaceFolding::new_1d(Mat3::Id * 5.0, Axis::U));
+    // world.insert_space_folding(sphere_ent, SpaceFolding::new_1d(Mat3::Id * 5.0, Axis::U));
     // Rotation
     world.insert_rotating(sphere_ent, Rotating {
         speed_deg_per_sec: 30.0,
