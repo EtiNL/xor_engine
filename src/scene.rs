@@ -73,7 +73,7 @@ pub fn spawn_demo_csg(world: &mut World, _tex_mgr: &mut TextureManager) -> Resul
         .map_err(|e| SceneBuildError(format!("add_node(Union u1): {:?}", e)))?;
     let k_u2 = tree.add_node(Node { node_type: NodeType::Operation(OperationType::Union),       parent: None, sibling: None, children: [None, None] })
         .map_err(|e| SceneBuildError(format!("add_node(Union u2): {:?}", e)))?;
-    let k_i = tree.add_node(Node { node_type: NodeType::Operation(OperationType::Intersection),  parent: None, sibling: None, children: [None, None] })
+    let k_i = tree.add_node(Node { node_type: NodeType::Operation(OperationType::Difference),  parent: None, sibling: None, children: [None, None] })
         .map_err(|e| SceneBuildError(format!("add_node(Difference): {:?}", e)))?;
 
     tree.connect(k_u1, k_x).map_err(|e| SceneBuildError(format!("connect(u1, bx): {:?}", e)))?;
