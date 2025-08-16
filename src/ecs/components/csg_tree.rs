@@ -44,7 +44,7 @@ pub enum TreeConstructError {
 pub const INVALID_LEAF: u32 = 0xFFFFFFFF;
 pub const INVALID_COMBINATION: u32 = u32::MAX;
 pub const INVALID_OPERATION: u32 = u32::MAX;
-pub const MAX_LEAFS: usize = 32;
+pub const MAX_LEAFS: usize = 65;
 pub const MAX_NODES: usize = 2 * MAX_LEAFS - 1;
 
 #[repr(u32)]
