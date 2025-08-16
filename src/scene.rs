@@ -1,4 +1,5 @@
 use std::error::Error;
+use std::f32::consts::PI;
 
 use crate::ecs::ecs::{World, Entity};
 use crate::ecs::ecs::components::{
@@ -196,6 +197,125 @@ pub fn spawn_demo_csg2(world: &mut World, _tex_mgr: &mut TextureManager) -> Resu
     tree.connect(k_df, k_union).map_err(|e| SceneBuildError(format!("connect(df, union): {:?}", e)))?;
 
     // Install into the world
+    world.insert_csg_tree(e_tree, tree);
+
+    Ok(e_tree)
+}
+
+pub fn spawn_demo_csg3(world: &mut World, _tex_mgr: &mut TextureManager) -> Result<Entity, Box<dyn Error>> {
+    #[derive(Debug)]
+    struct SceneBuildError(String);
+    impl std::fmt::Display for SceneBuildError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "{}", self.0) }
+    }
+    impl std::error::Error for SceneBuildError {}
+
+    // --- parameters (tweak to taste) -----------------------------------------
+    let center    = Vec3::new(0.0, 0.0, -12.0);
+    let sphere_r  = 4.0_f32;
+    let bar_long  = 6.0_f32;   // half-extent along the bar axis
+    let bar_thin  = 0.18_f32;  // half-extent across the bar
+
+    // --- leaves ---------------------------------------------------------------
+    // keep: the big sphere
+    let e_sphere = world.spawn();
+    world.insert_transform(e_sphere, Transform { position: center, rotation: Quat::identity() });
+    world.insert_sdf_base(e_sphere, SdfBase { sdf_type: SdfType::Sphere, params: [sphere_r, 0.0, 0.0] });
+    world.insert_material(e_sphere, MaterialComponent { color: [0.95, 0.92, 0.85], texture: None, use_texture: false });
+    world.insert_rotating(e_sphere, Rotating { speed_deg_per_sec: 20.0 });
+
+    // 64 slender boxes as cutters:
+    // - 32 in a ring around Z
+    // - 32 in a ring around Y (phase shifted to avoid overlap with the Z ring)
+    let mut cutters: Vec<Entity> = Vec::with_capacity(64);
+
+    // ring around Z
+    for i in 0..32 {
+        let ang = (i as f32) * (2.0 * PI / 32.0);
+        let rot = Quat::from_axis_angle(Vec3::new(0.0, 0.0, 1.0), ang);
+        let e = world.spawn();
+        world.insert_transform(e, Transform { position: center, rotation: rot });
+        world.insert_sdf_base(e, SdfBase { sdf_type: SdfType::Cube, params: [bar_long, bar_thin, bar_thin] });
+        world.insert_material(e, MaterialComponent { color: [0.25, 0.25, 0.25], texture: None, use_texture: false });
+        world.insert_rotating(e, Rotating { speed_deg_per_sec: 30.0 });
+        cutters.push(e);
+    }
+
+    // ring around Y (phase shift + tilt a bit for richer intersections)
+    for i in 0..32 {
+        let ang = (i as f32) * (2.0 * PI / 32.0) + (PI / 32.0);
+        let base = Quat::from_axis_angle(Vec3::new(0.0, 1.0, 0.0), ang);
+        // add a small extra tilt around X so cuts aren’t coplanar with the first ring
+        let rot  = base * Quat::from_axis_angle(Vec3::new(1.0, 0.0, 0.0), 0.20);
+        let e = world.spawn();
+        world.insert_transform(e, Transform { position: center, rotation: rot });
+        world.insert_sdf_base(e, SdfBase { sdf_type: SdfType::Cube, params: [bar_long, bar_thin, bar_thin] });
+        world.insert_material(e, MaterialComponent { color: [0.22, 0.22, 0.22], texture: None, use_texture: false });
+        world.insert_rotating(e, Rotating { speed_deg_per_sec: 30.0 });
+        cutters.push(e);
+    }
+
+    // --- CSG owner entity (tree-level material can override leaves) ----------
+    let e_tree = world.spawn();
+    world.insert_material(e_tree, MaterialComponent { color: [0.85, 0.40, 0.20], texture: None, use_texture: false });
+    // world.insert_space_folding(e_tree, SpaceFolding::new_3d(Mat3::Id * 20.0)); // optional
+
+    // --- Build the large binary CSG: sphere \ union(all cutters) -------------
+    let mut tree = CsgTree::new();
+
+    // helper
+    let mut add_leaf = |ent: Entity| -> Result<NodeKey, SceneBuildError> {
+        tree.add_node(Node {
+            node_type: NodeType::Leaf(ent),
+            parent: None, sibling: None, children: [None, None]
+        }).map_err(|e| SceneBuildError(format!("add_node(leaf): {:?}", e)))
+    };
+
+    // sphere leaf
+    let k_sphere = add_leaf(e_sphere)?;
+
+    // cutter leaves
+    let mut cutter_keys: Vec<NodeKey> = Vec::with_capacity(cutters.len());
+    for (idx, ent) in cutters.into_iter().enumerate() {
+        let k = add_leaf(ent).map_err(|e| SceneBuildError(format!("add_node(cutter #{idx}): {e}")))?;
+        cutter_keys.push(k);
+    }
+
+    // balanced union reduction: reduces vec of node keys to a single union node
+    fn reduce_union(tree: &mut CsgTree, mut nodes: Vec<NodeKey>) -> Result<NodeKey, SceneBuildError> {
+        while nodes.len() > 1 {
+            let mut next = Vec::with_capacity((nodes.len() + 1) / 2);
+            for pair in nodes.chunks(2) {
+                if pair.len() == 1 {
+                    next.push(pair[0]);
+                } else {
+                    let u = tree.add_node(Node {
+                        node_type: NodeType::Operation(OperationType::Union),
+                        parent: None, sibling: None, children: [None, None]
+                    }).map_err(|e| SceneBuildError(format!("add_node(Union): {:?}", e)))?;
+
+                    tree.connect(u, pair[0]).map_err(|e| SceneBuildError(format!("connect(union, a): {:?}", e)))?;
+                    tree.connect(u, pair[1]).map_err(|e| SceneBuildError(format!("connect(union, b): {:?}", e)))?;
+                    next.push(u);
+                }
+            }
+            nodes = next;
+        }
+        Ok(nodes[0])
+    }
+
+    let k_union = reduce_union(&mut tree, cutter_keys)?;
+
+    // final difference: keep sphere, subtract union of cutters
+    let k_diff = tree.add_node(Node {
+        node_type: NodeType::Operation(OperationType::Difference),
+        parent: None, sibling: None, children: [None, None]
+    }).map_err(|e| SceneBuildError(format!("add_node(Difference): {:?}", e)))?;
+
+    tree.connect(k_diff, k_sphere).map_err(|e| SceneBuildError(format!("connect(diff, sphere): {:?}", e)))?;
+    tree.connect(k_diff, k_union ).map_err(|e| SceneBuildError(format!("connect(diff, union): {:?}", e)))?;
+
+    // install into the world
     world.insert_csg_tree(e_tree, tree);
 
     Ok(e_tree)

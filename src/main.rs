@@ -55,7 +55,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Texture manager stays the same
     let mut tex_mgr = TextureManager::new();
 
-    let _tree_entity = scene::spawn_demo_csg2(&mut world, &mut tex_mgr)?;
+    let _tree_entity = scene::spawn_demo_csg3(&mut world, &mut tex_mgr)?;
 
     // // — CUBE — 
     // let mut cube_ent = world.spawn();

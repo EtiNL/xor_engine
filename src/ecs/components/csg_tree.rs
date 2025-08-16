@@ -41,7 +41,7 @@ pub enum TreeConstructError {
     TreeNotBinaryOrNotConnected
 }
 
-const MAX_LEAF_NUMBER: usize = 32;
+const MAX_LEAFS: usize = 65;
 pub const INVALID_LEAF: u32 = 0xFFFFFFFF;
 pub const INVALID_COMBINATION: u32 = u32::MAX;
 pub const INVALID_OPERATION: u32 = u32::MAX;
@@ -49,9 +49,9 @@ pub const INVALID_OPERATION: u32 = u32::MAX;
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct GpuCsgTree {
-    pub gpu_index_list: [u32; MAX_LEAF_NUMBER],
-    pub combination_indices: [u32; 2*(MAX_LEAF_NUMBER - 1)],
-    pub operation_list: [u32; MAX_LEAF_NUMBER - 1],
+    pub gpu_index_list: [u32; MAX_LEAFS],
+    pub combination_indices: [u32; 2*(MAX_LEAFS - 1)],
+    pub operation_list: [u32; MAX_LEAFS - 1],
     pub material_id: u32,
     pub tree_folding_id: u32,
     pub leaf_count: u32,   // <-- new
@@ -62,9 +62,9 @@ pub struct GpuCsgTree {
 impl Default for GpuCsgTree {
     fn default() -> Self {
         GpuCsgTree {
-            gpu_index_list: [INVALID_LEAF; MAX_LEAF_NUMBER],
-            combination_indices: [INVALID_COMBINATION; 2*(MAX_LEAF_NUMBER-1)],
-            operation_list: [INVALID_OPERATION; MAX_LEAF_NUMBER-1],
+            gpu_index_list: [INVALID_LEAF; MAX_LEAFS],
+            combination_indices: [INVALID_COMBINATION; 2*(MAX_LEAFS-1)],
+            operation_list: [INVALID_OPERATION; MAX_LEAFS-1],
             material_id: INVALID_MATERIAL,
             tree_folding_id: INVALID_FOLDING,
             leaf_count: 0,
@@ -79,7 +79,7 @@ impl CsgTree {
 
     pub fn add_node(&mut self, node: Node) -> Result<NodeKey, TreeConstructError> {
         // enforce the limit via the set
-        if matches!(node.node_type, NodeType::Leaf(_)) && self.leaf_entities.len() >= MAX_LEAF_NUMBER {
+        if matches!(node.node_type, NodeType::Leaf(_)) && self.leaf_entities.len() >= MAX_LEAFS {
             return Err(TreeConstructError::MaxLeafPossibleReached);
         }
     
@@ -500,8 +500,8 @@ impl World {
                 println!("{:?}", combination_indices);
                 println!("{:?}", operation_list);
 
-                // ---- gpu_index_list (fixed [u32; MAX_LEAF_NUMBER]) ----
-                let mut gpu_index_list = [INVALID_LEAF; MAX_LEAF_NUMBER];
+                // ---- gpu_index_list (fixed [u32; MAX_LEAFS]) ----
+                let mut gpu_index_list = [INVALID_LEAF; MAX_LEAFS];
                 for (i, nk) in node_keys.iter().enumerate() {
                     if i >= gpu_index_list.len() { break; }
                     let node = &tree.nodes[*nk];
@@ -512,14 +512,14 @@ impl World {
                     }
                 }
             
-                // ---- combination_indices (fixed [u32; 2*(MAX_LEAF_NUMBER-1)]) ----
-                let mut comb_idx = [INVALID_COMBINATION; 2 * (MAX_LEAF_NUMBER - 1)];
+                // ---- combination_indices (fixed [u32; 2*(MAX_LEAFS-1)]) ----
+                let mut comb_idx = [INVALID_COMBINATION; 2 * (MAX_LEAFS - 1)];
                 for (i, &v) in combination_indices.iter().enumerate().take(comb_idx.len()) {
                     comb_idx[i] = v;
                 }
             
-                // ---- operation_list (fixed [u32; MAX_LEAF_NUMBER-1]) ----
-                let mut op_list = [INVALID_OPERATION; MAX_LEAF_NUMBER - 1];
+                // ---- operation_list (fixed [u32; MAX_LEAFS-1]) ----
+                let mut op_list = [INVALID_OPERATION; MAX_LEAFS - 1];
                 for (i, &op) in operation_list.iter().enumerate().take(op_list.len()) {
                     op_list[i] = operation_type_translation(op);
                 }
@@ -536,8 +536,8 @@ impl World {
                 .map(|i| i as u32)
                 .unwrap_or(INVALID_FOLDING);
 
-                let leaf_count = node_keys.len().min(MAX_LEAF_NUMBER) as u32;
-                let pair_count = (combination_indices.len() / 2).min(MAX_LEAF_NUMBER - 1) as u32;
+                let leaf_count = node_keys.len().min(MAX_LEAFS) as u32;
+                let pair_count = (combination_indices.len() / 2).min(MAX_LEAFS - 1) as u32;
     
                 let gpu_struct = GpuCsgTree {
                     gpu_index_list,

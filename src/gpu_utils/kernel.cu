@@ -131,7 +131,7 @@ enum CsgOperation {
     // Extend as needed
 };
 
-#define MAX_LEAFS 32
+#define MAX_LEAFS 65
 #define INVALID_LEAF 0xFFFFFFFFu
 
 struct GpuCsgTree {
