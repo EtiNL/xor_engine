@@ -35,6 +35,7 @@ pub struct GpuSdfObjectBase {
     pub light_id: u32,
     pub lattice_folding_id: u32,
     pub active: u32,
+    pub in_csg_tree: u32
 }
 impl Default for GpuSdfObjectBase {
     fn default() -> Self {
@@ -49,6 +50,7 @@ impl Default for GpuSdfObjectBase {
             light_id: INVALID_LIGHT,
             lattice_folding_id: INVALID_FOLDING,
             active: 0,
+            in_csg_tree: 0,
         }
     }
 }
@@ -63,7 +65,7 @@ impl World {
         if let Some(sdf_slot) = self.sdf_gpu_indices.get(e) {
             let active_off = offset_of!(GpuSdfObjectBase, active);
             // propagate any device copy error
-            self.gpu_sdf_objects.deactivate_sdf(sdf_slot, active_off)?;
+            self.gpu_sdf_objects.deactivate(sdf_slot, active_off)?;
             self.sdf_gpu_indices.free_for(e);
             updated = true;
         }
@@ -104,6 +106,8 @@ impl World {
                 .get(e)
                 .map(|i| i as u32)
                 .unwrap_or(INVALID_LIGHT);
+
+            let in_csg_tree: u32 = self.is_elem_in_trees(e) as u32;
     
             let sdf_obj = GpuSdfObjectBase {
                 sdf_type: sdf_type_translation(sdf_base.sdf_type) as i32,
@@ -116,6 +120,7 @@ impl World {
                 light_id,
                 lattice_folding_id: folding_id,
                 active: 1,
+                in_csg_tree: in_csg_tree,
             };
             self.gpu_sdf_objects.push(gpu_slot, &sdf_obj)?;
             scene_updated = true;

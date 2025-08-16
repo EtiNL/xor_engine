@@ -24,6 +24,7 @@ pub struct Node {
 
 pub struct CsgTree {
     nodes: SlotMap<NodeKey, Node>,
+    pub leaf_entities: HashSet<Entity>,
 }
 
 
@@ -41,7 +42,7 @@ pub enum TreeConstructError {
 }
 
 const MAX_LEAF_NUMBER: usize = 64;
-pub const INVALID_LEAF: u32 = u32::MAX;
+pub const INVALID_LEAF: u32 = 0xFFFFFFFF;
 pub const INVALID_COMBINATION: u32 = u32::MAX;
 pub const INVALID_OPERATION: u32 = u32::MAX;
 
@@ -49,31 +50,38 @@ pub const INVALID_OPERATION: u32 = u32::MAX;
 #[derive(Clone, Copy, Debug)]
 pub struct GpuCsgTree {
     pub gpu_index_list: [u32; MAX_LEAF_NUMBER],
-    pub combination_list: [u32; MAX_LEAF_NUMBER - 1],
+    pub combination_indices: [u32; 2*(MAX_LEAF_NUMBER - 1)],
     pub operation_list: [u32; MAX_LEAF_NUMBER - 1],
+    pub material_id: u32,
+    pub active: u32,
 }
 
 impl Default for GpuCsgTree {
     fn default() -> Self {
         GpuCsgTree {
             gpu_index_list: [INVALID_LEAF; MAX_LEAF_NUMBER],
-            combination_list: [INVALID_COMBINATION; MAX_LEAF_NUMBER-1],
+            combination_indices: [INVALID_COMBINATION; 2*(MAX_LEAF_NUMBER-1)],
             operation_list: [INVALID_OPERATION; MAX_LEAF_NUMBER-1],
+            material_id: INVALID_MATERIAL,
+            active: 0,
         }
     }
 }
 
 impl CsgTree {
-    pub fn new() -> Self { Self { nodes: SlotMap::with_key() } }
+    pub fn new() -> Self { Self { nodes: SlotMap::with_key(), leaf_entities: HashSet::new(), } }
 
     pub fn add_node(&mut self, node: Node) -> Result<NodeKey, TreeConstructError> {
-        if matches!(node.node_type, NodeType::Leaf(_)) {
-            let leaf_count = self.nodes.values().filter(|n| matches!(n.node_type, NodeType::Leaf(_))).count();
-            if leaf_count >= MAX_LEAF_NUMBER {
-                return Err(TreeConstructError::MaxLeafPossibleReached);
-            }
+        // enforce the limit via the set
+        if matches!(node.node_type, NodeType::Leaf(_)) && self.leaf_entities.len() >= MAX_LEAF_NUMBER {
+            return Err(TreeConstructError::MaxLeafPossibleReached);
         }
-        Ok(self.nodes.insert(node))
+    
+        let key = self.nodes.insert(node);
+        if let NodeType::Leaf(ent) = self.nodes[key].node_type {
+            self.leaf_entities.insert(ent);
+        }
+        Ok(key)
     }
 
     /// Attach `child` under `parent`:
@@ -259,7 +267,16 @@ impl CsgTree {
         }
 
         // 6) Finally remove this node from the arena and return it
-        self.nodes.remove(k)
+        self.nodes.remove(k);
+
+        // 6) Finally remove this node from the arena and return it
+        if let Some(removed) = self.nodes.remove(k) {
+            if let NodeType::Leaf(ent) = removed.node_type {
+                self.leaf_entities.remove(&ent);
+            }
+            return Some(removed);
+        }
+        None
     }
 
     pub fn remove_subtree(&mut self, k: NodeKey) {
@@ -301,7 +318,11 @@ impl CsgTree {
                     }
                 }
             }
-            tree.nodes.remove(k);
+            if let Some(n) = tree.nodes.remove(k) {
+                if let NodeType::Leaf(ent) = n.node_type {
+                    tree.leaf_entities.remove(&ent);
+                }
+            }
         }
         drop_rec(self, k);
     }
@@ -355,7 +376,42 @@ impl CsgTree {
 
         self.rec_to_GpuCsgTree_lists(leaf1_key, &mut leaf_keys, &mut combination_list, &mut operation_list, &mut computed_op, 1);
 
-        return Ok((leaf_keys, combination_list, operation_list))
+        fn change_combination_list_to_indices(combination_list: Vec<u32>, number_of_leafs: usize) -> Vec<u32> {
+            let mut combination_indices: Vec<u32> = Vec::new();
+
+            assert!(number_of_leafs >= 2, "need at least two leaves");
+        
+            // 0 = used/left boundary, 1 = available
+            let mut indices_to_compare: Vec<u8> = Vec::with_capacity(number_of_leafs);
+            indices_to_compare.extend(std::iter::repeat(1u8).take(number_of_leafs));
+        
+            for link_number in combination_list {
+                let mut first_nonzero_index: usize = 0;
+                while indices_to_compare[first_nonzero_index] == 0 {
+                    first_nonzero_index += 1;
+                }
+                let mut id_rigth: usize = first_nonzero_index;
+                let mut counter: u32 = 0;
+        
+                while counter < link_number {
+                    id_rigth += 1;
+                    if indices_to_compare[id_rigth] != 0 {
+                        counter += 1;
+                    }
+                }
+        
+                combination_indices.push((id_rigth as u32) - 1);
+                combination_indices.push(id_rigth as u32);
+        
+                indices_to_compare[id_rigth] = 0;
+            }
+        
+            combination_indices
+        }
+
+        let combination_indices: Vec<u32> = change_combination_list_to_indices(combination_list, leaf_keys.len());
+
+        return Ok((leaf_keys, combination_indices, operation_list))
     }
 
     fn rec_to_GpuCsgTree_lists(&self, n: NodeKey,
@@ -462,6 +518,10 @@ impl CsgTree {
             }
         }
     }
+
+    pub fn contains_entity(&self, e: Entity) -> bool {
+        self.leaf_entities.contains(&e)
+    }
 }
 
 
@@ -477,21 +537,35 @@ impl World {
             updated = true;
         }
 
+        if let Some(tree_slot) = self.sdf_gpu_indices.get(e) {
+            let active_off = offset_of!(GpuCsgTree, active);
+
+            self.gpu_csg_trees.deactivate(tree_slot, active_off)?;
+            self.csg_tree_gpu_indices.free_for(e);
+            updated = true;
+        }
+
         self.csg_trees.remove(e);
         Ok(updated)
     }
     pub(crate) fn sync_csg_tree(&mut self) -> Result<bool, Box<dyn std::error::Error>> {
         let mut scene_updated = false;
-    
-        for (_tree, idx) in self.csg_trees.iter_dirty() {
+        
+        let mut to_update_csg_tree: HashSet<u32> = HashSet::new();
+        for (_sdf, idx) in self.csg_trees.iter_dirty() { to_update_csg_tree.insert(idx); }
+        for (_mat, idx) in self.materials.iter_dirty() { to_update_csg_tree.insert(idx); }
+        
+        for idx in to_update_csg_tree {
             let e = Entity { index: idx, generation: self.gens[idx as usize] };
+    
+            let tree = match self.csg_trees.get(e) { Some(s) => s, None => continue };
+
             let gpu_slot = self.csg_tree_gpu_indices.get_or_allocate_for(e);
-            let tree = self.csg_trees.get(e).unwrap(); // safe
     
             if let Ok((node_keys, combinations, operations)) = tree.to_GpuCsgTree_lists() {
                 // fixed-size GPU arrays, prefilled with sentinels
                 let mut gpu_index_list   = [INVALID_LEAF;        MAX_LEAF_NUMBER];
-                let mut combination_list = [INVALID_COMBINATION; MAX_LEAF_NUMBER - 1];
+                let mut combination_indices = [INVALID_COMBINATION; 2*(MAX_LEAF_NUMBER - 1)];
                 let mut operation_list   = [INVALID_OPERATION;   MAX_LEAF_NUMBER - 1];
     
                 // fill gpu_index_list from leaf node_keys
@@ -510,16 +584,24 @@ impl World {
     
                 // copy combinations (u32s) and encoded operations (u32s)
                 for (i, comb) in combinations.iter().copied().enumerate() {
-                    if i < combination_list.len() { combination_list[i] = comb; }
+                    if i < combination_indices.len() { combination_indices[i] = comb; }
                 }
                 for (i, op) in operations.iter().copied().enumerate() {
                     if i < operation_list.len() { operation_list[i] = operation_type_translation(op); }
                 }
+
+                let material_id = self
+                .material_gpu_indices
+                .get(e)
+                .map(|i| i as u32)
+                .unwrap_or(INVALID_MATERIAL);
     
                 let gpu_struct = GpuCsgTree {
                     gpu_index_list,
-                    combination_list,
+                    combination_indices,
                     operation_list,
+                    material_id,
+                    active: 1,
                 };
     
                 self.gpu_csg_trees.push(gpu_slot, &gpu_struct)?;
@@ -528,5 +610,12 @@ impl World {
         }
     
         Ok(scene_updated)
+    }
+
+    pub(crate) fn is_elem_in_trees(&self, e: Entity) -> bool{
+        for (tree, _) in self.csg_trees.iter() {
+            if tree.contains_entity(e){ return true}
+        }
+        return false
     }
 }

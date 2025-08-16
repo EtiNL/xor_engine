@@ -488,7 +488,7 @@ impl<T> GpuBuffer<T> {
         Ok(index)
     }
 
-    pub fn deactivate_sdf(&self, index: usize, active_offset: usize) -> Result<(), Box<dyn Error>> {
+    pub fn deactivate(&self, index: usize, active_offset: usize) -> Result<(), Box<dyn Error>> {
         if index >= self.capacity {
             return Err(Box::from("Index out of bounds in GpuBuffer::deactivate_element"));
         }
