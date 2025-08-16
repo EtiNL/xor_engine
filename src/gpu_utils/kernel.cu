@@ -125,7 +125,7 @@ struct GpuCamera {
     unsigned int rand_seed_init_count;
 };
 
-#define MAX_LEAFS   16
+#define MAX_LEAFS   32
 #define MAX_NODES   (2*MAX_LEAFS - 1)
 
 enum CsgOp : uint32_t { OP_LEAF=0, OP_UNION=1, OP_INTER=2, OP_DIFF=3 };
