@@ -41,34 +41,67 @@ pub enum TreeConstructError {
     TreeNotBinaryOrNotConnected
 }
 
-const MAX_LEAF_NUMBER: usize = 4;
 pub const INVALID_LEAF: u32 = 0xFFFFFFFF;
 pub const INVALID_COMBINATION: u32 = u32::MAX;
 pub const INVALID_OPERATION: u32 = u32::MAX;
+pub const MAX_LEAFS: usize = 16;
+pub const MAX_NODES: usize = 2 * MAX_LEAFS - 1;
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug)]
+pub enum GpuCsgOp {
+    Leaf = 0,
+    Union = 1,
+    Inter = 2,
+    Diff  = 3,
+}
+
+#[inline]
+fn op_to_gpu_u32(op: OperationType) -> u32 {
+    match op {
+        OperationType::Union        => GpuCsgOp::Union as u32,
+        OperationType::Intersection => GpuCsgOp::Inter as u32,
+        OperationType::Difference   => GpuCsgOp::Diff  as u32,
+    }
+}
+
+pub const INVALID_NODE_U32: u32 = u32::MAX;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct GpuCsgTree {
-    pub gpu_index_list: [u32; MAX_LEAF_NUMBER],
-    pub combination_indices: [u32; 2*(MAX_LEAF_NUMBER - 1)],
-    pub operation_list: [u32; MAX_LEAF_NUMBER - 1],
-    pub material_id: u32,
-    pub tree_folding_id: u32,
-    pub leaf_count: u32,   // <-- new
-    pub pair_count: u32,
-    pub active: u32,
+    pub node_count:     u32,                     // <= MAX_NODES
+    pub leaf_count:     u32,                     // <= MAX_LEAFS
+    pub root:           u32,                     // node id of root (postorder index)
+
+    pub op:             [u32; MAX_NODES],        // GpuCsgOp as u32
+    pub left:           [u32; MAX_NODES],        // child node id (undefined for leaves)
+    pub right:          [u32; MAX_NODES],        // child node id (undefined for leaves)
+    pub payload:        [u32; MAX_NODES],        // for leaves: sdf gpu index; internal: unused
+
+    pub eval_postorder: [u32; MAX_NODES],        // 0..node_count-1 (node ids in postorder)
+
+    pub material_id:    u32,
+    pub tree_folding_id:u32,
+    pub active:         u32,
 }
 
 impl Default for GpuCsgTree {
     fn default() -> Self {
-        GpuCsgTree {
-            gpu_index_list: [INVALID_LEAF; MAX_LEAF_NUMBER],
-            combination_indices: [INVALID_COMBINATION; 2*(MAX_LEAF_NUMBER-1)],
-            operation_list: [INVALID_OPERATION; MAX_LEAF_NUMBER-1],
+        Self {
+            node_count: 0,
+            leaf_count: 0,
+            root: 0,
+
+            op:    [GpuCsgOp::Leaf as u32; MAX_NODES],
+            left:  [INVALID_NODE_U32; MAX_NODES],
+            right: [INVALID_NODE_U32; MAX_NODES],
+            payload: [INVALID_LEAF; MAX_NODES],
+
+            eval_postorder: [0; MAX_NODES],
+
             material_id: INVALID_MATERIAL,
             tree_folding_id: INVALID_FOLDING,
-            leaf_count: 0,
-            pair_count: 0,
             active: 0,
         }
     }
@@ -79,7 +112,7 @@ impl CsgTree {
 
     pub fn add_node(&mut self, node: Node) -> Result<NodeKey, TreeConstructError> {
         // enforce the limit via the set
-        if matches!(node.node_type, NodeType::Leaf(_)) && self.leaf_entities.len() >= MAX_LEAF_NUMBER {
+        if matches!(node.node_type, NodeType::Leaf(_)) && self.leaf_entities.len() >= MAX_LEAFS {
             return Err(TreeConstructError::MaxLeafPossibleReached);
         }
     
@@ -333,125 +366,96 @@ impl CsgTree {
         drop_rec(self, k);
     }
 
-    fn get_to_next_leafs(&self, k: NodeKey) -> Option<(NodeKey, NodeKey)> {
-        // We suppose that k is not a leaf
-        let n = &self.nodes[k];
-        if let [Some(c1), Some(c2)] = n.children {
-            let child1 = &self.nodes[c1];
-            let child2 = &self.nodes[c2];
-
-            if matches!(child1.node_type, NodeType::Operation(_)) {
-                return self.get_to_next_leafs(c2)
-            }
-            else if matches!(child2.node_type, NodeType::Operation(_)) {
-                return self.get_to_next_leafs(c1)
-            }
-            else {
-                return Some((c1, c2))
-            }
-        }
-        else if matches!(n.children, [Some(_), None]) || matches!(n.children, [None, Some(_)]){
-            return None
-        }
-        else {
-            if let Some(sibling_node_key) = n.sibling {
-                return Some((k, sibling_node_key))
-            }
-            else {
-                return None
-            }
-        }
-    }
-
-    pub fn to_GpuCsgTree_lists(&self)
-        -> Result<(Vec<NodeKey>, Vec<u32>, Vec<OperationType>), TreeConstructError>
+    pub fn to_gpu_csg_tree<F>(
+        &self,
+        mut leaf_payload_of: F,
+        material_id: u32,
+        tree_folding_id: u32,
+    ) -> Result<GpuCsgTree, TreeConstructError>
+    where
+        F: FnMut(Entity) -> u32,
     {
-        // 1) Sanity
         if !self.is_binary_and_connected() {
             return Err(TreeConstructError::TreeNotBinaryOrNotConnected);
         }
 
-        // 2) Find root (unique because binary+connected)
-        let root = self.nodes.iter()
+        // — find unique root
+        let root_key = self.nodes
+            .iter()
             .find_map(|(k, n)| if n.parent.is_none() { Some(k) } else { None })
-            .expect("root must exist");
+            .expect("connected tree must have a root");
 
-        // 3) In-order leaf order -> defines initial positions 0..N-1
-        fn inorder_leaves(tree: &CsgTree, k: NodeKey, out: &mut Vec<NodeKey>) {
+        // — postorder traversal (collect NodeKey in postorder)
+        fn postorder(keys: &mut Vec<NodeKey>, tree: &CsgTree, k: NodeKey) {
             let n = &tree.nodes[k];
-            match n.node_type {
-                NodeType::Leaf(_) => out.push(k),
-                NodeType::Operation(_) => {
-                    if let Some(lc) = n.children[0] { inorder_leaves(tree, lc, out); }
-                    if let Some(rc) = n.children[1] { inorder_leaves(tree, rc, out); }
-                }
-            }
+            if let Some(l) = n.children[0] { postorder(keys, tree, l); }
+            if let Some(r) = n.children[1] { postorder(keys, tree, r); }
+            keys.push(k);
         }
-        let mut leaf_keys: Vec<NodeKey> = Vec::new();
-        inorder_leaves(self, root, &mut leaf_keys);
-        let n_leaves = leaf_keys.len();
-        if n_leaves < 2 {
-            return Err(TreeConstructError::TreeNotBinaryOrNotConnected);
+        let mut post: Vec<NodeKey> = Vec::new();
+        postorder(&mut post, self, root_key);
+
+        // — count leaves & bounds
+        let leaf_count = post.iter()
+            .filter(|&&k| matches!(self.nodes[k].node_type, NodeType::Leaf(_)))
+            .count();
+
+        if leaf_count == 0 || leaf_count > MAX_LEAFS {
+            return Err(TreeConstructError::MaxLeafPossibleReached);
+        }
+        let node_count = post.len();
+        if node_count > MAX_NODES {
+            return Err(TreeConstructError::MaxLeafPossibleReached);
         }
 
-        // Map: leaf NodeKey -> current position in the frontier
+        // — map NodeKey -> dense node id (its index in postorder)
         use std::collections::HashMap;
-        let mut pos: HashMap<NodeKey, usize> =
-            leaf_keys.iter().enumerate().map(|(i, &k)| (k, i)).collect();
+        let mut id_of: HashMap<NodeKey, u32> = HashMap::with_capacity(node_count);
+        for (i, &k) in post.iter().enumerate() {
+            id_of.insert(k, i as u32);
+        }
 
-        // Frontier blocks: start as 0..N-1 (each leaf is a block)
-        let mut avail: Vec<u32> = (0..n_leaves as u32).collect();
+        // — fill GPU struct
+        let mut gpu = GpuCsgTree::default();
+        gpu.node_count      = node_count as u32;
+        gpu.leaf_count      = leaf_count as u32;
+        gpu.root            = *id_of.get(&root_key).unwrap();
+        gpu.material_id     = material_id;
+        gpu.tree_folding_id = tree_folding_id;
+        gpu.active          = 1;
 
-        // Outputs
-        let mut pairs: Vec<u32> = Vec::with_capacity(2 * (n_leaves - 1));
-        let mut ops:   Vec<OperationType> = Vec::with_capacity(n_leaves - 1);
+        // op/left/right/payload
+        for (i, &k) in post.iter().enumerate() {
+            let i = i as u32;
+            let n = &self.nodes[k];
 
-        // 4) Post-order emission: returns the *current* frontier index of the node’s block
-        fn emit(
-            tree: &CsgTree,
-            k: NodeKey,
-            pos: &mut HashMap<NodeKey, usize>,
-            avail: &mut Vec<u32>,
-            pairs: &mut Vec<u32>,
-            ops: &mut Vec<OperationType>,
-        ) -> usize {
-            let n = &tree.nodes[k];
             match n.node_type {
-                NodeType::Leaf(_) => pos[&k],
+                NodeType::Leaf(ent) => {
+                    gpu.op[i as usize]      = GpuCsgOp::Leaf as u32;
+                    gpu.left[i as usize]    = INVALID_NODE_U32;
+                    gpu.right[i as usize]   = INVALID_NODE_U32;
+                    gpu.payload[i as usize] = leaf_payload_of(ent);
+                }
                 NodeType::Operation(op) => {
+                    gpu.op[i as usize] = op_to_gpu_u32(op);
+
                     let l = n.children[0].expect("binary op needs left child");
                     let r = n.children[1].expect("binary op needs right child");
-
-                    // Reduce left subtree to one block
-                    let li = emit(tree, l, pos, avail, pairs, ops);
-                    // Reduce right subtree to one block (to the right of li)
-                    let ri = emit(tree, r, pos, avail, pairs, ops);
-
-                    // Emit final pair for this operation: (avail[li], avail[ri])
-                    pairs.push(avail[li]);
-                    pairs.push(avail[ri]);
-                    ops.push(op);
-
-                    // Merge blocks in the frontier: remove the right block
-                    avail.remove(ri);
-
-                    // After removal, any positions > ri shift left by 1.
-                    // Update all stored positions accordingly.
-                    for v in pos.values_mut() {
-                        if *v == ri { *v = li; }          // right subtree now represented by left slot
-                        else if *v > ri { *v -= 1; }      // shift
-                    }
-                    li
+                    gpu.left [i as usize] = *id_of.get(&l).unwrap();
+                    gpu.right[i as usize] = *id_of.get(&r).unwrap();
+                    gpu.payload[i as usize] = INVALID_LEAF; // unused for internal nodes
                 }
             }
         }
 
-        let _root_idx = emit(self, root, &mut pos, &mut avail, &mut pairs, &mut ops);
+        // eval_postorder is just 0..node_count-1 because we indexed by postorder
+        for i in 0..node_count {
+            gpu.eval_postorder[i] = i as u32;
+        }
 
-        Ok((leaf_keys, pairs, ops))
+        Ok(gpu)
     }
 
-    
     pub fn contains_entity(&self, e: Entity) -> bool {
         self.leaf_entities.contains(&e)
     }
@@ -483,78 +487,42 @@ impl World {
     }
     pub(crate) fn sync_csg_tree(&mut self) -> Result<bool, Box<dyn std::error::Error>> {
         let mut scene_updated = false;
-        
+
         let mut to_update_csg_tree: HashSet<u32> = HashSet::new();
-        for (_sdf, idx) in self.csg_trees.iter_dirty() { to_update_csg_tree.insert(idx); }
-        for (_mat, idx) in self.materials.iter_dirty() { to_update_csg_tree.insert(idx); }
-        
+        for (_sdf, idx) in self.csg_trees.iter_dirty()     { to_update_csg_tree.insert(idx); }
+        for (_mat, idx) in self.materials.iter_dirty()     { to_update_csg_tree.insert(idx); }
+        for (_fld, idx) in self.space_foldings.iter_dirty(){ to_update_csg_tree.insert(idx); }
+
         for idx in to_update_csg_tree {
             let e = Entity { index: idx, generation: self.gens[idx as usize] };
-    
             let tree = match self.csg_trees.get(e) { Some(s) => s, None => continue };
 
             let gpu_slot = self.csg_tree_gpu_indices.get_or_allocate_for(e);
-    
-            if let Ok((node_keys, combination_indices, operation_list)) = tree.to_GpuCsgTree_lists() {
-                println!("{:?}", node_keys);
-                println!("{:?}", combination_indices);
-                println!("{:?}", operation_list);
 
-                // ---- gpu_index_list (fixed [u32; MAX_LEAF_NUMBER]) ----
-                let mut gpu_index_list = [INVALID_LEAF; MAX_LEAF_NUMBER];
-                for (i, nk) in node_keys.iter().enumerate() {
-                    if i >= gpu_index_list.len() { break; }
-                    let node = &tree.nodes[*nk];
-                    if let NodeType::Leaf(ent) = node.node_type {
-                        if let Some(sdf_slot) = self.sdf_gpu_indices.get(ent) {
-                            gpu_index_list[i] = sdf_slot as u32;
-                        }
-                    }
-                }
-            
-                // ---- combination_indices (fixed [u32; 2*(MAX_LEAF_NUMBER-1)]) ----
-                let mut comb_idx = [INVALID_COMBINATION; 2 * (MAX_LEAF_NUMBER - 1)];
-                for (i, &v) in combination_indices.iter().enumerate().take(comb_idx.len()) {
-                    comb_idx[i] = v;
-                }
-            
-                // ---- operation_list (fixed [u32; MAX_LEAF_NUMBER-1]) ----
-                let mut op_list = [INVALID_OPERATION; MAX_LEAF_NUMBER - 1];
-                for (i, &op) in operation_list.iter().enumerate().take(op_list.len()) {
-                    op_list[i] = operation_type_translation(op);
-                }
-
-                let material_id = self
+            let material_id = self
                 .material_gpu_indices
                 .get(e)
                 .map(|i| i as u32)
                 .unwrap_or(INVALID_MATERIAL);
 
-                let tree_folding_id = self
+            let tree_folding_id = self
                 .folding_gpu_indices
                 .get(e)
                 .map(|i| i as u32)
                 .unwrap_or(INVALID_FOLDING);
 
-                let leaf_count = node_keys.len().min(MAX_LEAF_NUMBER) as u32;
-                let pair_count = (combination_indices.len() / 2).min(MAX_LEAF_NUMBER - 1) as u32;
-    
-                let gpu_struct = GpuCsgTree {
-                    gpu_index_list,
-                    combination_indices: comb_idx,
-                    operation_list: op_list,
-                    material_id,
-                    tree_folding_id,
-                    leaf_count,
-                    pair_count,
-                    active: 1,
-                };
-    
+            // closure: entity -> sdf gpu index (or INVALID_LEAF if not synced yet)
+            let mut leaf_payload_of = |ent: Entity| -> u32 {
+                self.sdf_gpu_indices.get(ent).map(|i| i as u32).unwrap_or(INVALID_LEAF)
+            };
+
+            // build the binary GPU tree
+            if let Ok(gpu_struct) = tree.to_gpu_csg_tree(&mut leaf_payload_of, material_id, tree_folding_id) {
                 self.gpu_csg_trees.push(gpu_slot, &gpu_struct)?;
                 scene_updated = true;
             }
         }
-    
+
         Ok(scene_updated)
     }
 

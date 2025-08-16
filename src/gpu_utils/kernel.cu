@@ -1,6 +1,7 @@
 #include <math.h>
 #include <curand_kernel.h>
 #include <stdio.h>
+#include <stdint.h> 
 
 struct Vec2 {
     float x, y;
@@ -124,26 +125,33 @@ struct GpuCamera {
     unsigned int rand_seed_init_count;
 };
 
-enum CsgOperation {
-    UNION = 0,
-    INTERSECTION = 1,
-    DIFFERENCE  = 2,
-    // Extend as needed
-};
+#define MAX_LEAFS   16
+#define MAX_NODES   (2*MAX_LEAFS - 1)
 
-#define MAX_LEAFS 4
-#define INVALID_LEAF 0xFFFFFFFFu
+enum CsgOp : uint32_t { OP_LEAF=0, OP_UNION=1, OP_INTER=2, OP_DIFF=3 };
 
 struct GpuCsgTree {
-    unsigned int sdf_base_index_list[MAX_LEAFS];
-    unsigned int combination_indices[2*(MAX_LEAFS-1)];
-    unsigned int operation_list[MAX_LEAFS-1];
+    // counts and root
+    uint32_t node_count;          // total nodes used (<= MAX_NODES)
+    uint32_t leaf_count;          // leaves used (<= MAX_LEAFS)
+    uint32_t root;                // node id of the root
 
-    unsigned int material_id;
-    unsigned int tree_folding_id;
-    unsigned int leaf_count;
-    unsigned int pair_count;
-    unsigned int active;
+    // structure-of-arrays for binary tree
+    uint32_t op      [MAX_NODES]; // OP_LEAF/OP_UNION/OP_INTER/OP_DIFF
+    uint32_t left    [MAX_NODES]; // child node id (undefined for leaves)
+    uint32_t right   [MAX_NODES]; // child node id (undefined for leaves)
+    uint32_t payload [MAX_NODES]; // for leaves: sdf_objs index; internal: unused
+
+    // postorder evaluation schedule (node ids in postorder)
+    uint32_t eval_postorder[MAX_NODES]; // length = node_count
+
+    // optional: per-leaf cheap bounds for interval tests (fill as needed)
+    // float leaf_bound_sphere[MAX_LEAFS];
+
+    // your existing extras
+    uint32_t material_id;
+    uint32_t tree_folding_id;
+    uint32_t active;
 };
 
 enum SdfType {
@@ -424,50 +432,221 @@ __device__ Vec3 obj_mapping(
         return triplanar_sample(mat, obj, p, normal, center);
     }
 }
-struct CsgCombineResult {
-    float        d;
-    unsigned int leaf_id;
-    float        grad_sign;  // +1 or -1 (for DIFFERENCE)
-};
+// --- folding helper (tree-level override takes precedence) -------------------
+__device__ __forceinline__
+Vec3 folded_center_for(const GpuSdfObjectBase& obj,
+                       Vec3 p,
+                       const GpuSpaceFolding* __restrict__ foldings,
+                       unsigned int tree_fid)
+{
+    unsigned int fid = (tree_fid != INVALID_FOLDING) ? tree_fid : obj.lattice_folding_id;
+    Vec3 c = obj.center;
+    if (fid != INVALID_FOLDING) {
+        const GpuSpaceFolding& fold = foldings[fid];
+        Vec3 diff = p - c;
+        Vec3 lc   = diff * fold.lattice_basis_inv;
+        Vec3 kf( (fold.active_mask & 1u) ? roundf(lc.x) : 0.0f,
+                 (fold.active_mask & 2u) ? roundf(lc.y) : 0.0f,
+                 (fold.active_mask & 4u) ? roundf(lc.z) : 0.0f );
+        c = c + kf * fold.lattice_basis;
+    }
+    return c;
+}
+
+// --- cheap leaf lower bound using a bounding sphere --------------------------
+__device__ __forceinline__
+float leaf_bound_radius(const GpuSdfObjectBase& obj)
+{
+    if (obj.sdf_type == SDF_SPHERE) {
+        return obj.params[0];
+    } else if (obj.sdf_type == SDF_BOX) {
+        // circumscribed sphere of OBB
+        float x = obj.params[0], y = obj.params[1], z = obj.params[2];
+        return sqrtf(x*x + y*y + z*z);
+    }
+    // fallback (very loose)
+    return 1e9f;
+}
 
 __device__ __forceinline__
-CsgCombineResult combine_distances(
-    float*              distances,
-    unsigned int*       leaf_indices,
-    const unsigned int* combination_indices,
-    const unsigned int* operation_list,
-    int                 pair_count
-) {
+float leaf_lower_bound(const GpuSdfObjectBase& obj,
+                       Vec3 p,
+                       Vec3 c_fold)
+{
+    return (p - c_fold).length() - leaf_bound_radius(obj);
+}
 
-    float grad_sign_buf[MAX_LEAFS];
-
-    #pragma unroll
-    for (int i = 0; i < MAX_LEAFS; ++i) grad_sign_buf[i] = 1.0f;
-
+// --- bottom-up lower bounds (SoA tree, postorder) ----------------------------
+__device__ __forceinline__
+void compute_node_lower_bounds(const GpuCsgTree& tree,
+                               Vec3 p,
+                               const GpuSdfObjectBase* __restrict__ sdf,
+                               const GpuSpaceFolding* __restrict__ folds,
+                               unsigned int tree_fid,
+                               float* __restrict__ lb /*size >= MAX_NODES*/)
+{
     #pragma unroll 1
-    for (int j = 0; j < pair_count; ++j) {
-        unsigned int L = combination_indices[2*j + 0];
-        unsigned int R = combination_indices[2*j + 1];
+    for (int i=0; i<tree.node_count; ++i) {
+        uint32_t n  = tree.eval_postorder[i];
+        uint32_t op = tree.op[n];
 
-        float dl = distances[L], dr = distances[R];
-        float gl = grad_sign_buf[L], gr = grad_sign_buf[R];
-        CsgOperation op = static_cast<CsgOperation>(operation_list[j]);
+        if (op == OP_LEAF) {
+            const GpuSdfObjectBase& o = sdf[ tree.payload[n] ];
+            Vec3 c = folded_center_for(o, p, folds, tree_fid);
+            lb[n]  = leaf_lower_bound(o, p, c);
+        } else {
+            uint32_t L = tree.left [n];
+            uint32_t R = tree.right[n];
+            float bL = lb[L];
+            float bR = lb[R];
+            if (op == OP_UNION)      lb[n] = fminf(bL, bR);
+            else if (op == OP_INTER) lb[n] = fmaxf(bL, bR);
+            else /*OP_DIFF*/         lb[n] = bL;   // conservative (needs upper bound for tighter)
+        }
+    }
+}
 
-        if (op == UNION) {
-            if (dr < dl) { distances[L] = dr; leaf_indices[L] = leaf_indices[R]; grad_sign_buf[L] = gr; }
-        } else if (op == INTERSECTION) {
-            if (dr > dl) { distances[L] = dr; leaf_indices[L] = leaf_indices[R]; grad_sign_buf[L] = gr; }
-        } else { // DIFFERENCE
-            if (!(dl > -dr)) { distances[L] = -dr; leaf_indices[L] = leaf_indices[R]; grad_sign_buf[L] = -gr; }
+// --- branch & bound evaluation (iterative, prunes UNION & DIFFERENCE) --------
+struct EvalTmp {
+    float   d;
+    uint32_t leaf_id;   // sdf index
+    float   sign;
+    uint8_t done;
+};
+
+struct CsgCombineResult {
+    float     d;
+    uint32_t  leaf_id;
+    float     grad_sign;   // +1 or -1 (for DIFFERENCE)
+};
+
+
+__device__ __forceinline__
+CsgCombineResult eval_csg_tree_bnb(const GpuCsgTree& tree,
+                                   Vec3 p,
+                                   const GpuSdfObjectBase* __restrict__ sdf,
+                                   const GpuSpaceFolding* __restrict__ folds)
+{
+    float   lb[MAX_NODES];
+    EvalTmp tmp[MAX_NODES];
+
+    // 1) lower bounds for ordering/pruning
+    compute_node_lower_bounds(tree, p, sdf, folds, tree.tree_folding_id, lb);
+
+    // 2) best-first + pruning using a tiny explicit stack
+    uint32_t firstChild[MAX_NODES];
+    uint32_t secondChild[MAX_NODES];
+
+    uint32_t stackNode[MAX_NODES];
+    uint8_t  stackState[MAX_NODES]; // 0=setup, 1=after first, 2=after second
+    int sp = -1;
+
+    // init temps
+    #pragma unroll 1
+    for (int n=0; n<tree.node_count; ++n) { tmp[n].done=0; }
+
+    stackNode[++sp]  = tree.root;
+    stackState[sp]   = 0;
+
+    while (sp >= 0) {
+        uint32_t n  = stackNode[sp];
+        uint8_t  st = stackState[sp];
+
+        uint32_t op = tree.op[n];
+        if (op == OP_LEAF) {
+            const GpuSdfObjectBase& o = sdf[ tree.payload[n] ];
+            Vec3 c = folded_center_for(o, p, folds, tree.tree_folding_id);
+            float d = evaluate_sdf(o, p, c);
+            tmp[n] = { d, tree.payload[n], 1.0f, 1u };
+            --sp;
+            continue;
+        }
+
+        uint32_t L = tree.left [n];
+        uint32_t R = tree.right[n];
+
+        if (st == 0) {
+            // decide order once using bounds
+            if (op == OP_UNION) {
+                if (lb[L] <= lb[R]) { firstChild[n]=L; secondChild[n]=R; }
+                else                { firstChild[n]=R; secondChild[n]=L; }
+            } else if (op == OP_INTER) {
+                // evaluate the one with larger lower bound first (helps a bit)
+                if (lb[L] >= lb[R]) { firstChild[n]=L; secondChild[n]=R; }
+                else                { firstChild[n]=R; secondChild[n]=L; }
+            } else { // OP_DIFF: evaluate left first
+                firstChild[n]  = L;
+                secondChild[n] = R;
+            }
+            // descend into first if not done
+            if (!tmp[firstChild[n]].done) {
+                stackState[sp] = 1;
+                stackNode[++sp] = firstChild[n];
+                stackState[sp]  = 0;
+                continue;
+            }
+            st = 1; // already computed by someone else
+        }
+
+        if (st == 1) {
+            const uint32_t F = firstChild[n];
+            const uint32_t S = secondChild[n];
+
+            // pruning tests
+            if (op == OP_UNION) {
+                // if d_first <= lb(second) then min == d_first
+                if (tmp[F].d <= lb[S]) {
+                    tmp[n] = { tmp[F].d, tmp[F].leaf_id, tmp[F].sign, 1u };
+                    --sp;
+                    continue;
+                }
+            } else if (op == OP_DIFF) {
+                // if d_left >= -lb(right) then max(dL, -dR) == d_left
+                if (tmp[F].d >= -lb[S]) {
+                    tmp[n] = { tmp[F].d, tmp[F].leaf_id, tmp[F].sign, 1u };
+                    --sp;
+                    continue;
+                }
+            }
+            // need the second child
+            if (!tmp[S].done) {
+                stackState[sp] = 2;
+                stackNode[++sp] = S;
+                stackState[sp]  = 0;
+                continue;
+            }
+            st = 2;
+        }
+
+        // st == 2 → both children computed → combine exactly
+        {
+            const uint32_t Lc = tree.left [n];
+            const uint32_t Rc = tree.right[n];
+            float dl = tmp[Lc].d, dr = tmp[Rc].d;
+            float gl = tmp[Lc].sign, gr = tmp[Rc].sign;
+
+            if (op == OP_UNION) {
+                if (dr < dl) tmp[n] = { dr, tmp[Rc].leaf_id, gr, 1u };
+                else         tmp[n] = { dl, tmp[Lc].leaf_id, gl, 1u };
+            } else if (op == OP_INTER) {
+                if (dr > dl) tmp[n] = { dr, tmp[Rc].leaf_id, gr, 1u };
+                else         tmp[n] = { dl, tmp[Lc].leaf_id, gl, 1u };
+            } else { // OP_DIFF
+                if (dl > -dr) tmp[n] = { dl,   tmp[Lc].leaf_id,  gl,   1u };
+                else          tmp[n] = { -dr,  tmp[Rc].leaf_id, -gr,   1u };
+            }
+            --sp;
         }
     }
 
     CsgCombineResult out;
-    out.d         = distances[0];
-    out.leaf_id   = leaf_indices[0];
-    out.grad_sign = grad_sign_buf[0];
+    out.d         = tmp[tree.root].d;
+    out.leaf_id   = tmp[tree.root].leaf_id;
+    out.grad_sign = tmp[tree.root].sign;
     return out;
 }
+
+
 
 extern "C" __global__
 void raymarch(
@@ -557,76 +736,25 @@ void raymarch(
         }
 
         for (int j = 0; j < num_trees; ++j) {
-            const GpuCsgTree& src_tree = csg_trees[j];
+            const GpuCsgTree& T = csg_trees[j];
+            if (!T.active) continue;
 
-            int leaf_count = src_tree.leaf_count;
-            int pair_count = src_tree.pair_count;
-            
-            unsigned int tree_folding_id = src_tree.tree_folding_id;
-            unsigned int tree_material_id = src_tree.material_id;
-            
-            float distances[MAX_LEAFS];
-            unsigned int leaf_indices[MAX_LEAFS];
+            // quick root lower bound to possibly skip the whole tree
+            float lb_root[MAX_NODES];
+            compute_node_lower_bounds(T, p, sdf_objs, foldings, T.tree_folding_id, lb_root);
+            if (lb_root[T.root] >= min_dist) continue;
 
-            // Fill only up to leaf_count
-            for (int k = 0; k < leaf_count; ++k) {
-                unsigned int sdf_id = src_tree.sdf_base_index_list[k];
-                leaf_indices[k] = k;
-
-                const GpuSdfObjectBase& src = sdf_objs[sdf_id];
-                Vec3 c = src.center;
-
-                unsigned fid_sdf = src.lattice_folding_id;
-                float min_half_thickness = 0.0f;
-                if (fid_sdf != INVALID_FOLDING) {
-                    const GpuSpaceFolding& fold = foldings[fid_sdf];
-                    Vec3 diff = p - c;                             // <-- was p - center
-                    Vec3 lc   = diff * fold.lattice_basis_inv;
-                    Vec3 kf( (fold.active_mask & 1u) ? roundf(lc.x) : 0.0f,
-                            (fold.active_mask & 2u) ? roundf(lc.y) : 0.0f,
-                            (fold.active_mask & 4u) ? roundf(lc.z) : 0.0f );
-                    c = c + kf * fold.lattice_basis;               // <-- was center = ...
-                    min_half_thickness = fold.min_half_thickness;
-                }
-
-                float d = evaluate_sdf(src, p, c);
-                if (d < 0) {
-                    float center_dist = (c - p).length();
-                    d = min_half_thickness - center_dist;
-                }
-                distances[k] = d;
-            }
-
-            CsgCombineResult comb = combine_distances(
-                distances, leaf_indices,
-                src_tree.combination_indices,
-                src_tree.operation_list,
-                pair_count
-            );
+            CsgCombineResult comb = eval_csg_tree_bnb(T, p, sdf_objs, foldings);
 
             float d = comb.d;
             if (d < min_dist) {
-                unsigned int leaf_pos = comb.leaf_id;                       // position in the leaf array
-                unsigned int sdf_id   = src_tree.sdf_base_index_list[leaf_pos]; // <-- no sdf_indices[]
-
-                // recompute center only for the winning leaf
-                const GpuSdfObjectBase& wsrc = sdf_objs[sdf_id];
-                Vec3 wcenter = wsrc.center;
-                if (wsrc.lattice_folding_id != INVALID_FOLDING) {
-                    const GpuSpaceFolding& fold = foldings[wsrc.lattice_folding_id];
-                    Vec3 diff = p - wcenter;
-                    Vec3 lc   = diff * fold.lattice_basis_inv;
-                    Vec3 kf( (fold.active_mask & 1u) ? roundf(lc.x) : 0.0f,
-                            (fold.active_mask & 2u) ? roundf(lc.y) : 0.0f,
-                            (fold.active_mask & 4u) ? roundf(lc.z) : 0.0f );
-                    wcenter = wcenter + kf * fold.lattice_basis;
-                }
-
-                center_min         = wcenter;  // for shading/grad and UVs
+                const GpuSdfObjectBase& wsrc = sdf_objs[ comb.leaf_id ];
+                Vec3 wcenter = folded_center_for(wsrc, p, foldings, T.tree_folding_id);
+                center_min         = wcenter;
                 min_dist           = d;
-                best_j             = (int)sdf_id;
-                best_tree_folding  = tree_folding_id;
-                best_tree_material = tree_material_id;
+                best_j             = (int)comb.leaf_id;
+                best_tree_folding  = T.tree_folding_id;
+                best_tree_material = T.material_id;
                 best_grad_sign     = comb.grad_sign;
             }
         }
@@ -668,7 +796,7 @@ void raymarch(
             Vec3 L = Vec3(0.5f,-1.0f,-0.6f).normalize();
 
             float lam = fmaxf(0.0f, Vec3::dot(normal, L));
-            color = color*lam;
+            color = color*fminf(lam+0.3f, 1.0f);
             if (cam.spp > 1) {
                 accumulate(cam.accum, color, i);
             }
