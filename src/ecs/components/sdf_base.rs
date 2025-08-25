@@ -8,12 +8,14 @@ pub struct SdfBase {
 pub enum SdfType {
     Sphere, 
     Cube,
+    Plane
 }
 
 pub fn sdf_type_translation(sdf_type: SdfType) -> u32 {
     match sdf_type {
         SdfType::Sphere => 0,
         SdfType::Cube => 1,
+        SdfType::Plane => 2,
     }
 }
 

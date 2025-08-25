@@ -21,8 +21,8 @@ use ecs::ecs::{Vec3, Quat, Mat3};
 
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let max_frames: Option<u32> = std::env::var("MAX_FRAMES").ok().and_then(|s| s.parse().ok());
-    let mut frame_count: u32 = 0;
+    let max_frames: Option<u32> = std::env::var("MAX_FRAMES").ok().and_then(|s| s.parse().ok()); //used for benchmarking with cargo gpu-nsys
+    let mut frame_count: u32 = 0; //used for benchmarking with cargo gpu-nsys
 
     // Initialization
     let mut cuda_context = CudaContext::new("./src/gpu_utils/kernel.ptx")?;
@@ -55,32 +55,32 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Texture manager stays the same
     let mut tex_mgr = TextureManager::new();
 
-    let _tree_entity = scene::spawn_demo_csg3(&mut world, &mut tex_mgr)?;
+    let _tree_entity = scene::spawn_demo_csg(&mut world, &mut tex_mgr)?;
 
-    // // — CUBE — 
-    // let mut cube_ent = world.spawn();
-    // world.insert_transform(cube_ent, Transform {
-    //     position: Vec3::new(0.0, 0.0, -10.0),
-    //     rotation: Quat::identity(),
-    // });
-    // // 1) SDF shape
-    // world.insert_sdf_base(cube_ent, SdfBase {
-    //     sdf_type: SdfType::Cube,
-    //     params: [1.0, 1.0, 1.0], // half-extents
-    // });
-    // // 2) Material
-    // let cube_tex = tex_mgr.load(Path::new("./src/textures/lines_texture.png"))?;
-    // world.insert_material(cube_ent, MaterialComponent {
-    //     color: [0.0, 0.5, 0.5],
-    //     texture: Some(cube_tex),
-    //     use_texture: false,
-    // });
-    // // Space folding
-    // world.insert_space_folding(cube_ent, SpaceFolding::new_2d(Mat3::Id * 10.0, Axis::U, Axis::W));
-    // // 3) Rotation
-    // world.insert_rotating(cube_ent, Rotating {
-    //     speed_deg_per_sec: 30.0,
-    // });
+    // — CUBE — 
+    let mut cube_ent = world.spawn();
+    world.insert_transform(cube_ent, Transform {
+        position: Vec3::new(0.0, 0.0, -10.0),
+        rotation: Quat::identity(),
+    });
+    // 1) SDF shape
+    world.insert_sdf_base(cube_ent, SdfBase {
+        sdf_type: SdfType::Cube,
+        params: [1.0, 1.0, 1.0], // half-extents
+    });
+    // 2) Material
+    let cube_tex = tex_mgr.load(Path::new("./src/textures/lines_texture.png"))?;
+    world.insert_material(cube_ent, MaterialComponent {
+        color: [0.0, 0.5, 0.5],
+        texture: Some(cube_tex),
+        use_texture: false,
+    });
+    // Space folding
+    world.insert_space_folding(cube_ent, SpaceFolding::new_2d(Mat3::Id * 10.0, Axis::U, Axis::W));
+    // 3) Rotation
+    world.insert_rotating(cube_ent, Rotating {
+        speed_deg_per_sec: 30.0,
+    });
 
     // // — SPHERE — 
     // let sphere_ent = world.spawn();

@@ -4,11 +4,11 @@ new_key_type! { pub struct NodeKey; }
 #[derive(Clone, Copy, Debug)]
 pub enum OperationType { Union, Intersection, Difference }
 
-pub fn operation_type_translation(op_type: OperationType) -> u32 {
+pub fn operation_type_translation(op_type: OperationType) -> u8 {
     match op_type {
-        OperationType::Union => 0,
+        OperationType::Union        => 0,
         OperationType::Intersection => 1,
-        OperationType::Difference => 2,
+        OperationType::Difference   => 2,
     }
 }
 
@@ -41,23 +41,28 @@ pub enum TreeConstructError {
     TreeNotBinaryOrNotConnected
 }
 
-const MAX_LEAFS: usize = 65;
-pub const INVALID_LEAF: u32 = 0xFFFFFFFF;
-pub const INVALID_COMBINATION: u32 = u32::MAX;
-pub const INVALID_OPERATION: u32 = u32::MAX;
+const MAX_LEAFS: usize = 64;
+
+pub const INVALID_LEAF: u32 = 0xFFFF_FFFF;
+pub const INVALID_COMBINATION: u16 = u16::MAX;
+pub const INVALID_OPERATION: u8 = u8::MAX;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct GpuCsgTree {
     pub gpu_index_list: [u32; MAX_LEAFS],
-    pub combination_indices: [u32; 2*(MAX_LEAFS - 1)],
-    pub operation_list: [u32; MAX_LEAFS - 1],
+    pub combination_indices: [u16; 2*(MAX_LEAFS - 1)],
+    pub operation_list: [u8; MAX_LEAFS - 1],
     pub material_id: u32,
     pub tree_folding_id: u32,
-    pub leaf_count: u32,   // <-- new
+    pub leaf_count: u32,
     pub pair_count: u32,
     pub active: u32,
+
+    pub bound_center: Vec3,
+    pub bound_radius: f32,
 }
+
 
 impl Default for GpuCsgTree {
     fn default() -> Self {
@@ -70,6 +75,8 @@ impl Default for GpuCsgTree {
             leaf_count: 0,
             pair_count: 0,
             active: 0,
+            bound_center: Vec3::default(),
+            bound_radius: 0.0,
         }
     }
 }
@@ -481,6 +488,63 @@ impl World {
         self.csg_trees.remove(e);
         Ok(updated)
     }
+    fn csg_bound_sphere_for_leaves(
+        &self,
+        tree: &CsgTree,
+        leaf_keys: &[NodeKey],
+    ) -> (Vec3, f32) {
+        // 1) collect centers and conservative radii
+        let mut centers: Vec<Vec3> = Vec::with_capacity(leaf_keys.len());
+        let mut leaf_r:   Vec<f32> = Vec::with_capacity(leaf_keys.len());
+    
+        for &nk in leaf_keys {
+            let node = &tree.nodes[nk];
+            if let NodeType::Leaf(ent) = node.node_type {
+                // center from Transform (fallback to origin)
+                let c: Vec3 = self.transforms.get(ent)
+                    .map(|t| t.position)
+                    .unwrap_or_else(|| Vec3::new(0.0, 0.0, 0.0));
+                centers.push(c);
+    
+                // conservative leaf radius from SdfBase
+                let r = if let Some(sdf) = self.sdf_bases.get(ent) {
+                    match sdf.sdf_type {
+                        SdfType::Sphere => sdf.params[0].abs(),
+                        SdfType::Cube => {
+                            let hx = sdf.params[0].abs();
+                            let hy = sdf.params[1].abs();
+                            let hz = sdf.params[2].abs();
+                            (hx*hx + hy*hy + hz*hz).sqrt() // encloses rotated box
+                        }
+                        // If you do have planes in trees, consider skipping them instead
+                        // of using a huge radius; otherwise this will dominate the bound.
+                        SdfType::Plane => 1e6,
+                    }
+                } else { 0.0 };
+                leaf_r.push(r);
+            }
+        }
+    
+        if centers.is_empty() {
+            return (Vec3::new(0.0, 0.0, 0.0), 0.0);
+        }
+    
+        // 2) centroid (simple average)
+        let mut acc = Vec3::new(0.0, 0.0, 0.0);
+        for c in &centers { acc = acc + *c; }
+        let inv = 1.0f32 / (centers.len() as f32);
+        let center = acc * inv;
+    
+        // 3) radius = max_i ( |ci - center| + ri )
+        let mut R = 0.0f32;
+        for (ci, ri) in centers.iter().zip(leaf_r.iter()) {
+            let d = (*ci - center).length() + *ri;
+            if d > R { R = d; }
+        }
+    
+        (center, R)
+    }
+
     pub(crate) fn sync_csg_tree(&mut self) -> Result<bool, Box<dyn std::error::Error>> {
         let mut scene_updated = false;
         
@@ -496,9 +560,6 @@ impl World {
             let gpu_slot = self.csg_tree_gpu_indices.get_or_allocate_for(e);
     
             if let Ok((node_keys, combination_indices, operation_list)) = tree.to_GpuCsgTree_lists() {
-                println!("{:?}", node_keys);
-                println!("{:?}", combination_indices);
-                println!("{:?}", operation_list);
 
                 // ---- gpu_index_list (fixed [u32; MAX_LEAFS]) ----
                 let mut gpu_index_list = [INVALID_LEAF; MAX_LEAFS];
@@ -512,13 +573,11 @@ impl World {
                     }
                 }
             
-                // ---- combination_indices (fixed [u32; 2*(MAX_LEAFS-1)]) ----
                 let mut comb_idx = [INVALID_COMBINATION; 2 * (MAX_LEAFS - 1)];
                 for (i, &v) in combination_indices.iter().enumerate().take(comb_idx.len()) {
-                    comb_idx[i] = v;
+                    comb_idx[i] = v as u16;
                 }
-            
-                // ---- operation_list (fixed [u32; MAX_LEAFS-1]) ----
+
                 let mut op_list = [INVALID_OPERATION; MAX_LEAFS - 1];
                 for (i, &op) in operation_list.iter().enumerate().take(op_list.len()) {
                     op_list[i] = operation_type_translation(op);
@@ -536,18 +595,25 @@ impl World {
                 .map(|i| i as u32)
                 .unwrap_or(INVALID_FOLDING);
 
-                let leaf_count = node_keys.len().min(MAX_LEAFS) as u32;
-                let pair_count = (combination_indices.len() / 2).min(MAX_LEAFS - 1) as u32;
-    
+                let leaf_count = (node_keys.len().min(MAX_LEAFS)) as u32;
+                let host_pairs  = (combination_indices.len() / 2).min(MAX_LEAFS - 1);
+                let pair_count  = host_pairs.min(leaf_count.saturating_sub(1) as usize) as u32;
+
+                // ---- tree bound ----
+                let (bound_center, bound_radius) = self.csg_bound_sphere_for_leaves(tree, &node_keys);
+
+                // ---- final GPU struct ----
                 let gpu_struct = GpuCsgTree {
                     gpu_index_list,
                     combination_indices: comb_idx,
-                    operation_list: op_list,
+                    operation_list:      op_list,
                     material_id,
                     tree_folding_id,
                     leaf_count,
                     pair_count,
                     active: 1,
+                    bound_center,
+                    bound_radius,
                 };
     
                 self.gpu_csg_trees.push(gpu_slot, &gpu_struct)?;

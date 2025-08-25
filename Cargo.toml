@@ -24,17 +24,18 @@ fast_math      = []              # toggles NVCC --use_fast_math in build.rs
 
 # ───────────── tuned profiles ─────────────
 [profile.dev]
-opt-level        = 3
-lto              = "thin"
-codegen-units    = 1
-debug            = 0
+opt-level        = 0           # was 3
+lto              = false       # was "thin"
+codegen-units    = 16          # was 1 (lets rustc parallelize)
+debug            = 1           # small DWARF; cheap and useful
 debug-assertions = false
 overflow-checks  = false
-panic            = "abort"
+panic            = "abort"     # keep as you had
+incremental      = true        # explicit (default in dev, but be clear)
 
 [profile.release]
 opt-level        = 3
 lto              = "thin"
 codegen-units    = 1
 panic            = "abort"
-debug            = 1   # keep minimal DWARF for better nsys symbols
+debug            = 1
