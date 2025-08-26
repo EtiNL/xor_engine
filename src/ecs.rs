@@ -1,27 +1,23 @@
-pub mod ecs_gpu_interface;
-pub mod math_op;
 
+pub mod ecs_gpu_index_map; // src/ecs/ecs_gpu_index_map.rs  (GpuIndexMap)
+pub mod math_op;           // src/ecs/math_op.rs            (Vec3, Quat, Mat3)
 
 pub mod ecs {
-
-    use cuda_driver_sys::{CUdeviceptr};
-    
-    
-    use std::{error::Error, path::Path};
     use std::collections::HashSet;
     use memoffset::offset_of;
+    use std::error::Error;
+    use cuda_driver_sys::CUdeviceptr;
 
-    use crate::ecs::ecs_gpu_interface::ecs_gpu_interface::{
-        GpuCamera, SdfType, sdf_type_translation,
-        GpuIndexMap, TextureManager, TextureHandle,
-        GpuSdfObjectBase, GpuMaterial, GpuLight, GpuSpaceFolding,
-        INVALID_MATERIAL, INVALID_LIGHT, INVALID_FOLDING, ImageRayAccum
+    use crate::cuda_wrapper::{CudaContext, GpuBuffer, CameraBuffers};
+
+    // pull in GpuIndexMap and math types
+    use super::ecs_gpu_index_map::ecs_gpu_index_map::GpuIndexMap;
+    pub use super::math_op::math_op::{Vec3, Quat, Mat3};
+
+    use self::components::{
+        Camera, SdfBase, MaterialComponent, LightComponent, SpaceFolding, Transform, Rotating,
+        TextureManager, GpuCamera, GpuSdfObjectBase, GpuMaterial, GpuLight, GpuSpaceFolding, CsgTree, GpuCsgTree,
     };
-    use crate::cuda_wrapper::{GpuBuffer, CameraBuffers, CudaContext};
-    use crate::ecs::math_op::math_op::{Vec3, Quat, Mat3};
-
-
-
 
     // Entity
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -34,145 +30,7 @@ pub mod ecs {
         const DEAD: Self = Entity { index: u32::MAX, generation: 0 };
     }
 
-    // Components
-    #[derive(Clone, Copy, Debug)]
-    pub struct Camera {
-        pub width: u32,
-        pub height: u32,
-        pub aperture: f32,
-        pub focus_distance: f32,
-        pub viewport_width: f32,
-        pub viewport_height: f32,
-        pub spp: u32,        // sample per pixel, if you want it here
-    }
 
-    impl Camera {
-        pub fn new(
-            fov: f32,
-            width: u32,
-            height: u32,
-            aperture: f32,
-            focus_dist: f32,
-            spp: u32,
-        ) -> Self {
-            let aspect_ratio = width as f32 / height as f32;
-
-            // Champ de vision vertical → taille plan image
-            let theta = fov.to_radians();
-            let viewport_height = 2.0 * (theta / 2.0).tan();
-            let viewport_width = aspect_ratio * viewport_height;
-
-            Self {
-                width: width,
-                height: height,
-                aperture: aperture,
-                focus_distance: focus_dist,
-                viewport_width: viewport_width,
-                viewport_height: viewport_height,
-                spp: spp,
-            }
-        }
-    }
-
-    #[derive(Clone, Copy, Debug)]
-    pub struct SdfBase {
-        pub sdf_type: SdfType,
-        pub params: [f32; 3],
-    }
-
-    #[derive(Clone, Debug)]
-    pub struct MaterialComponent {
-        pub color: [f32; 3],
-        pub texture: Option<TextureHandle>,
-        pub use_texture: bool,
-        // future: roughness, emission, metallic, etc.
-    }
-
-    #[derive(Clone, Copy, Debug)]
-    pub struct LightComponent {
-        pub position: Vec3,
-        pub color: Vec3,
-        pub intensity: f32,
-    }
-    #[derive(Clone, Copy, Debug, Default)]
-    pub struct Transform {
-        pub position: Vec3,
-        pub rotation: Quat,
-    }
-
-
-    #[derive(Clone, Copy, Debug)]
-    pub enum Axis { U, V, W }
-
-    impl Axis {
-        #[inline] fn to_mask(self) -> u32 {
-            match self {
-                Axis::U => 0b001,
-                Axis::V => 0b010,
-                Axis::W => 0b100,
-            }
-        }
-    }
-
-    #[derive(Clone, Debug)]
-    pub struct SpaceFolding {
-        pub lattice_basis: Mat3,
-        pub lattice_basis_inv: Mat3, 
-        pub min_half_thickness: f32,
-        pub active_mask: u32, // bit0=u, bit1=v, bit2=w
-    }
-    impl SpaceFolding {
-        pub fn new_3d(basis: Mat3) -> Self {
-            Self::new_with_mask(basis, 0b111)
-        }
-
-        pub fn new_2d(basis: Mat3, a: Axis, b: Axis) -> Self {
-            let mask = a.to_mask() | b.to_mask();
-            Self::new_with_mask(basis, mask)
-        }
-
-        pub fn new_1d(basis: Mat3, a: Axis) -> Self {
-            Self::new_with_mask(basis, a.to_mask())
-        }
-
-        pub fn new_with_mask(lattice_basis: Mat3, active_mask: u32) -> Self {
-            // sanity: basis must be invertible
-            let det = lattice_basis.det();
-            debug_assert!(det != 0.0, "SpaceFolding basis must be invertible");
-            let lattice_basis_inv = lattice_basis.inv();
-
-            // axis lengths in world space
-            let u_len = (lattice_basis.a11*lattice_basis.a11
-                    + lattice_basis.a21*lattice_basis.a21
-                    + lattice_basis.a31*lattice_basis.a31).sqrt();
-            let v_len = (lattice_basis.a12*lattice_basis.a12
-                    + lattice_basis.a22*lattice_basis.a22
-                    + lattice_basis.a32*lattice_basis.a32).sqrt();
-            let w_len = (lattice_basis.a13*lattice_basis.a13
-                    + lattice_basis.a23*lattice_basis.a23
-                    + lattice_basis.a33*lattice_basis.a33).sqrt();
-
-            // only consider active axes when computing safety thickness
-            let mut min_len = f32::INFINITY;
-            if (active_mask & 0b001) != 0 { min_len = min_len.min(u_len); }
-            if (active_mask & 0b010) != 0 { min_len = min_len.min(v_len); }
-            if (active_mask & 0b100) != 0 { min_len = min_len.min(w_len); }
-            let min_half_thickness = if min_len.is_finite() { 0.5 * min_len } else { 0.0 };
-
-            Self { lattice_basis, lattice_basis_inv, min_half_thickness, active_mask }
-        }
-    }
-
-    #[derive(Clone, Copy, Debug, Default)]
-    pub struct Rotating {
-        pub speed_deg_per_sec: f32,
-    }
-
-    #[derive(Clone, Copy, Debug, Default)]
-    pub struct Velocity;   // pour plus tard
-
-    #[derive(Clone, Copy, Debug, Default)]
-    pub struct Collider;   // pour plus tard
 
     // Component storage
     pub struct SparseSet<T> {
@@ -289,17 +147,17 @@ pub mod ecs {
 
         // component pools
         cameras: SparseSet<Camera>,
+        csg_trees: SparseSet<CsgTree>,
         sdf_bases: SparseSet<SdfBase>,
         materials: SparseSet<MaterialComponent>,
         lights: SparseSet<LightComponent>,
         space_foldings: SparseSet<SpaceFolding>,
         transforms: SparseSet<Transform>,
         rotatings: SparseSet<Rotating>,
-        velocities: SparseSet<Velocity>,
-        colliders: SparseSet<Collider>,
 
         // GPU-side index maps
         camera_gpu_indices: GpuIndexMap,
+        csg_tree_gpu_indices: GpuIndexMap,
         sdf_gpu_indices: GpuIndexMap,
         material_gpu_indices: GpuIndexMap,
         light_gpu_indices: GpuIndexMap,
@@ -307,6 +165,7 @@ pub mod ecs {
 
         // GPU buffers
         pub gpu_cameras: GpuBuffer<GpuCamera>,
+        pub gpu_csg_trees: GpuBuffer<GpuCsgTree>,
         pub gpu_sdf_objects: GpuBuffer<GpuSdfObjectBase>,
         pub  gpu_materials: GpuBuffer<GpuMaterial>,
         pub gpu_lights: GpuBuffer<GpuLight>,
@@ -326,16 +185,16 @@ pub mod ecs {
                 entities_to_remove_from_gpu: vec![],
                 
                 cameras: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
+                csg_trees: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
                 sdf_bases: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
                 materials: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
                 lights: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
                 space_foldings: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
                 transforms: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
                 rotatings: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
-                velocities: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
-                colliders: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
                 
                 camera_gpu_indices: GpuIndexMap::new(),
+                csg_tree_gpu_indices: GpuIndexMap::new(),
                 sdf_gpu_indices: GpuIndexMap::new(),
                 material_gpu_indices: GpuIndexMap::new(),
                 light_gpu_indices: GpuIndexMap::new(),
@@ -344,6 +203,8 @@ pub mod ecs {
                 gpu_cameras:     GpuBuffer::<GpuCamera>::new(2)?,
                 cam_bufs: None,
 
+
+                gpu_csg_trees:   GpuBuffer::<GpuCsgTree>::new(8)?,
                 gpu_sdf_objects: GpuBuffer::<GpuSdfObjectBase>::new(8)?,
                 gpu_materials:   GpuBuffer::<GpuMaterial>::new(8)?,
                 gpu_lights:      GpuBuffer::<GpuLight>::new(8)?,
@@ -351,50 +212,6 @@ pub mod ecs {
 
                 active_camera: None,
             })
-        }
-        pub fn insert_camera(
-            &mut self,
-            e: Entity,
-            cam: Camera,
-            cuda: &CudaContext,
-        ) -> Result<(), Box<dyn Error>> {
-            self.cameras.insert(e, cam);
-    
-            // allocate CameraBuffer
-            if self.cam_bufs.is_none() {
-                self.cam_bufs = Some(CameraBuffers::new(cuda, cam.width, cam.height)?);
-            }
-            Ok(())
-        }
-        pub fn active_camera(&mut self, e: Entity){
-            self.active_camera = Some(e);
-        }
-        pub fn active_camera_index(&self) -> usize {
-            let ent = self.active_camera.expect("no active camera");
-            self.camera_gpu_indices
-                .get(ent)
-                .expect("GPU slot not allocated")
-        }
-        pub fn get_camera(&self, e: Entity) -> Option<&Camera> {
-            self.cameras.get(e)
-        }
-        pub fn insert_sdf_base(&mut self, e: Entity, sdf: SdfBase) {
-            self.sdf_bases.insert(e, sdf);
-        }
-        pub fn insert_material(&mut self, e: Entity, m: MaterialComponent) {
-            self.materials.insert(e, m);
-        }
-        pub fn insert_space_folding(&mut self, e: Entity, s: SpaceFolding) {
-            self.space_foldings.insert(e, s);
-        }
-        pub fn insert_transform(&mut self, e: Entity, t: Transform) {
-            self.transforms.insert(e, t);
-        }
-        pub fn insert_light(&mut self, e: Entity, l: LightComponent) {
-            self.lights.insert(e, l);
-        }
-        pub fn insert_rotating(&mut self, e: Entity, r: Rotating) {
-            self.rotatings.insert(e, r);
         }
 
         pub fn spawn(&mut self) -> Entity {
@@ -433,208 +250,28 @@ pub mod ecs {
                     index: entity_idx,
                     generation: self.gens[entity_idx as usize],
                 };
-                if let Some(sdf_slot) = self.sdf_gpu_indices.get(e) {
-                    let active_off = offset_of!(GpuSdfObjectBase, active);
-                    self.gpu_sdf_objects.deactivate_sdf(sdf_slot, active_off)?;
-                    self.sdf_gpu_indices.free_for(e);
-                    scene_updated = true;
-                }
-                if let Some(_mat_slot) = self.material_gpu_indices.get(e) {
-                    // release TextureHandle via the TextureManager
-                    let mat = self.materials.get(e).unwrap();
-                    if let Some(tex) = &mat.texture {
-                        texture_manager.release(tex)?;
-                    }
-                    self.material_gpu_indices.free_for(e);
-                    scene_updated = true;
-                }
-                if let Some(_fold_slot) = self.folding_gpu_indices.get(e) {
-                    self.folding_gpu_indices.free_for(e);
-                    scene_updated = true;
-                }
-                if let Some(_light_slot) = self.light_gpu_indices.get(e) {
-                    self.light_gpu_indices.free_for(e);
-                    scene_updated = true;
-                }
-                if let Some(_camera) = self.camera_gpu_indices.get(e) {
-                    self.camera_gpu_indices.free_for(e);
-                    scene_updated = true;
-                }
-
-                // remove host components
-                self.cameras.remove(e);
-                self.transforms.remove(e);
-                self.sdf_bases.remove(e);
-                self.materials.remove(e);
-                self.space_foldings.remove(e);
-                self.lights.remove(e);
-                self.rotatings.remove(e);
-                self.velocities.remove(e);
-                self.colliders.remove(e);
+                
+                scene_updated |= self.remove_camera(e);
+                scene_updated |= self.remove_sdf_base(e)?;
+                scene_updated |= self.remove_material(e, texture_manager)?;
+                scene_updated |= self.remove_light(e);
+                scene_updated |= self.remove_space_folding(e);
+                scene_updated |= self.remove_transform(e);
+                scene_updated |= self.remove_rotating(e);
+                scene_updated |= self.remove_csg_tree(e)?;
             }
 
-            // Sync Camera:
-            // Gather entities whose camera needs a refresh
-            let mut to_update_cam: HashSet<u32> = HashSet::new();
+            scene_updated |= self.sync_camera()?;
+            scene_updated |= self.sync_material(texture_manager)?;
+            scene_updated |= self.sync_light()?;
+            scene_updated |= self.sync_space_folding()?;
+            scene_updated |= self.sync_sdf_base()?; // last sync because it need all the attached components sync first
+            scene_updated |= self.sync_csg_tree()?;
 
-            //   – camera component itself was edited/inserted
-            for (_c, idx) in self.cameras.iter_dirty() {
-                to_update_cam.insert(idx);
-            }
-            //   – transform changed AND the entity owns a camera
-            for (_tr, idx) in self.transforms.iter_dirty() {
-                if self.cameras.contains(idx as usize) {
-                    to_update_cam.insert(idx);
-                }
-            }
-
-            // Build / upload the GPU-side camera structs
-            if let Some(bufs) = &self.cam_bufs {
-                for idx in to_update_cam {
-                    let e = Entity { index: idx,
-                                    generation: self.gens[idx as usize] };
-
-                    // CPU components we need
-                    let cam  = match self.cameras .get(e) { Some(c) => c, None => continue };
-                    let tr   = match self.transforms.get(e) { Some(t) => t, None => continue };
-
-                    // Allocate/reuse slot
-                    let gpu_slot = self.camera_gpu_indices.get_or_allocate_for(e);
-
-                    let accum = ImageRayAccum { 
-                        ray_per_pixel: bufs.ray_per_pixel, 
-                        image: bufs.image 
-                    };
-
-                    // Build GPU representation
-                    let gpu_cam = GpuCamera {
-                        position: tr.position,
-                        u:  tr.rotation * Vec3::X,
-                        v:  tr.rotation * Vec3::Y,
-                        w:  tr.rotation * (Vec3::Z * -1.0),   // forward
-                        aperture:        cam.aperture,
-                        focus_dist:      cam.focus_distance,
-                        viewport_width:  cam.viewport_width,
-                        viewport_height: cam.viewport_height,
-                        rand_states: bufs.rand_states,
-                        origins:     bufs.origins,
-                        directions:  bufs.directions,
-                        accum:       accum,
-                        image:       bufs.image,
-                        spp:    cam.spp,
-                        width:  cam.width,
-                        height: cam.height,
-                        rand_seed_init_count: 0,
-                    };
-
-                    self.gpu_cameras.push(gpu_slot, &gpu_cam)?;
-                    scene_updated = true;
-                }
-            }
         
-            // 2. Sync space foldings (dirty or new)
-            for (_fold, idx) in self.space_foldings.iter_dirty() {
-                let e = Entity { index: idx, generation: self.gens[idx as usize] };
-                let gpu_slot = self.folding_gpu_indices.get_or_allocate_for(e);
-                let folding = self.space_foldings.get(e).unwrap(); // safe
-                let gpu_struct = GpuSpaceFolding {
-                    lattice_basis: folding.lattice_basis,
-                    lattice_basis_inv: folding.lattice_basis_inv,
-                    min_half_thickness: folding.min_half_thickness,
-                    active_mask: folding.active_mask,
-                };
-                self.gpu_foldings.push(gpu_slot, &gpu_struct)?;
-                scene_updated = true;
-            }
-        
-            // 3. Sync materials (dirty)
-            for (_mat, idx) in self.materials.iter_dirty() {
-                let e = Entity { index: idx, generation: self.gens[idx as usize] };
-                let gpu_slot = self.material_gpu_indices.get_or_allocate_for(e);
-                let mat = self.materials.get(e).unwrap();
-        
-                let (texture_data_pointer, width, height) = if let Some(tex) = &mat.texture {
-                    (tex.d_ptr, tex.width, tex.height)
-                } else {
-                    (0, 0, 0)
-                };
-                let use_texture_flag = if mat.use_texture { 1 } else { 0 };
-        
-                let gpu_struct = GpuMaterial {
-                    color: mat.color,
-                    use_texture: use_texture_flag,
-                    texture_data_pointer: texture_data_pointer,
-                    width: width,
-                    height: height,
-                };
-                self.gpu_materials.push(gpu_slot, &gpu_struct)?;
-                scene_updated = true;
-            }
-        
-            // 4. Sync lights (dirty)
-            for (_light, idx) in self.lights.iter_dirty() {
-                let e = Entity { index: idx, generation: self.gens[idx as usize] };
-                let gpu_slot = self.light_gpu_indices.get_or_allocate_for(e);
-                let light = self.lights.get(e).unwrap();
-                let gpu_struct = GpuLight {
-                    position: light.position,
-                    color: light.color,
-                    intensity: light.intensity,
-                };
-                self.gpu_lights.push(gpu_slot, &gpu_struct)?;
-                scene_updated = true;
-            }
-        
-            // 5. Sync SDF bases / transforms / dependency-driven rebuilds
-            let mut to_update_sdf_set: HashSet<u32> = HashSet::new();
-            for (_sdf, idx) in self.sdf_bases.iter_dirty() { to_update_sdf_set.insert(idx); }
-            for (_tr, idx) in self.transforms.iter_dirty() { to_update_sdf_set.insert(idx); }
-            for (_mat, idx) in self.materials.iter_dirty() { to_update_sdf_set.insert(idx); }
-            for (_fold, idx) in self.space_foldings.iter_dirty() { to_update_sdf_set.insert(idx); }
-            for (_light, idx) in self.lights.iter_dirty() { to_update_sdf_set.insert(idx); }
-        
-            for idx in to_update_sdf_set {
-                let e = Entity { index: idx, generation: self.gens[idx as usize] };
-        
-                let sdf_base = match self.sdf_bases.get(e) { Some(s) => s, None => continue };
-                let transform = match self.transforms.get(e) { Some(t) => t, None => continue };
-        
-                let gpu_slot = self.sdf_gpu_indices.get_or_allocate_for(e);
-        
-                let material_id = self
-                    .material_gpu_indices
-                    .get(e)
-                    .map(|i| i as u32)
-                    .unwrap_or(INVALID_MATERIAL);
-                let folding_id = self
-                    .folding_gpu_indices
-                    .get(e)
-                    .map(|i| i as u32)
-                    .unwrap_or(INVALID_FOLDING);
-                let light_id = self
-                    .light_gpu_indices
-                    .get(e)
-                    .map(|i| i as u32)
-                    .unwrap_or(INVALID_LIGHT);
-        
-                let sdf_obj = GpuSdfObjectBase {
-                    sdf_type: sdf_type_translation(sdf_base.sdf_type) as i32,
-                    params: sdf_base.params,
-                    center: transform.position,
-                    u: transform.rotation * Vec3::X,
-                    v: transform.rotation * Vec3::Y,
-                    w: transform.rotation * Vec3::Z,
-                    material_id,
-                    light_id,
-                    lattice_folding_id: folding_id,
-                    active: 1,
-                };
-                self.gpu_sdf_objects.push(gpu_slot, &sdf_obj)?;
-                scene_updated = true;
-            }
-        
-            // 6. Clear dirty flags
-            self.cameras.clear_dirty_flags(); 
+            // 6. Clear dirty flags (dont move it to the differents sync functions because sync_sdf_base needs dirty flags to sync)
+            self.cameras.clear_dirty_flags();
+            self.csg_trees.clear_dirty_flags();
             self.space_foldings.clear_dirty_flags();
             self.materials.clear_dirty_flags();
             self.lights.clear_dirty_flags();
@@ -646,22 +283,35 @@ pub mod ecs {
         }
     }
 
-    // System
+    pub mod components {
+        use std::error::Error;
+        use std::collections::{HashSet, HashMap};
+        use std::path::{Path, PathBuf};
+        use cuda_driver_sys::CUdeviceptr;
+        use std::mem::offset_of;
 
-    pub fn update_rotation(world: &mut World, dt: f32, input_dir: Vec3) {
-        for (rot, idx) in world.rotatings.iter_mut() {
-            let gen = world.gens[idx as usize];
-            let e = Entity { index: idx, generation: gen };
+    
+        use crate::cuda_wrapper::{CudaContext, GpuBuffer, CameraBuffers};
+        use crate::ecs::ecs::{World, Entity};
+        use crate::ecs::math_op::math_op::{Vec3, Quat, Mat3};
 
-            if let Some(tr) = world.transforms.get_mut(e) {
+        use image::ImageReader;
 
-                let angle_y= rot.speed_deg_per_sec.to_radians() * dt * input_dir.y;
-                let q_y = Quat::from_axis_angle(Vec3::Y, angle_y);
+        // Place the contents straight into this single module
+        include!("ecs/components/camera.rs");
+        include!("ecs/components/transform.rs");
+        include!("ecs/components/sdf_base.rs");
+        include!("ecs/components/material.rs");
+        include!("ecs/components/light.rs");
+        include!("ecs/components/space_folding.rs");
+        include!("ecs/components/rotating.rs");
+        include!("ecs/components/csg_tree.rs");
+    }
 
-                let angle_x = rot.speed_deg_per_sec.to_radians() * dt * input_dir.x;
-                let q_x = Quat::from_axis_angle(Vec3::X, angle_x);
-                tr.rotation = (q_y * q_x) * tr.rotation;
-            }
-        }
+    /* ===== systems under ecs::system ===== */
+    pub mod system {
+        use crate::ecs::ecs::{World, Entity};
+        use crate::ecs::math_op::math_op::{Vec3, Quat};
+        include!("ecs/system/rotation.rs");
     }
 }

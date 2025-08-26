@@ -1,39 +1,43 @@
 
 pub mod math_op {
-    use std::ops::Mul;
+    
+    use std::ops::{Add, Sub, AddAssign, SubAssign, Mul};
 
     #[repr(C)]
     #[derive(Clone, Copy, Debug)]
-    pub struct Vec3 {
-        pub x: f32,
-        pub y: f32,
-        pub z: f32,
-    }
+    pub struct Vec3 { pub x: f32, pub y: f32, pub z: f32 }
+
     impl Vec3 {
         pub const X: Self = Self { x: 1.0, y: 0.0, z: 0.0 };
         pub const Y: Self = Self { x: 0.0, y: 1.0, z: 0.0 };
         pub const Z: Self = Self { x: 0.0, y: 0.0, z: 1.0 };
 
-        pub const fn new(x: f32, y: f32, z: f32) -> Self {
-            Self { x, y, z }
-        }
+        pub const fn new(x: f32, y: f32, z: f32) -> Self { Self { x, y, z } }
+
+        #[inline] pub fn dot(self, b: Vec3) -> f32 { self.x*b.x + self.y*b.y + self.z*b.z }
+        #[inline] pub fn length_sq(self) -> f32 { self.dot(self) }
+        #[inline] pub fn length(self) -> f32 { self.length_sq().sqrt() }
     }
-    impl Default for Vec3 {
-        fn default() -> Self {
-            Vec3::new(0.0, 0.0, 0.0)
-        }
+    impl Default for Vec3 { fn default() -> Self { Vec3::new(0.0, 0.0, 0.0) } }
+
+    impl Add for Vec3 {
+        type Output = Vec3;
+        fn add(self, rhs: Vec3) -> Vec3 { Vec3::new(self.x + rhs.x, self.y + rhs.y, self.z + rhs.z) }
+    }
+    impl AddAssign for Vec3 {
+        fn add_assign(&mut self, rhs: Vec3) { self.x += rhs.x; self.y += rhs.y; self.z += rhs.z; }
+    }
+    impl Sub for Vec3 {
+        type Output = Vec3;
+        fn sub(self, rhs: Vec3) -> Vec3 { Vec3::new(self.x - rhs.x, self.y - rhs.y, self.z - rhs.z) }
+    }
+    impl SubAssign for Vec3 {
+        fn sub_assign(&mut self, rhs: Vec3) { self.x -= rhs.x; self.y -= rhs.y; self.z -= rhs.z; }
     }
 
-    // Produit Vec3 * float
     impl Mul<f32> for Vec3 {
         type Output = Vec3;
-        fn mul(self, k: f32) -> Vec3 {
-            Vec3::new(
-                k*self.x,
-                k*self.y,
-                k*self.z,
-            )
-        }
+        fn mul(self, k: f32) -> Vec3 { Vec3::new(k*self.x, k*self.y, k*self.z) }
     }
 
     #[repr(C)]

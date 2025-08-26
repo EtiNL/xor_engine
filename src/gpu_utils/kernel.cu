@@ -1,6 +1,7 @@
 #include <math.h>
 #include <curand_kernel.h>
 #include <stdio.h>
+#include <stdint.h> 
 
 struct Vec2 {
     float x, y;
@@ -124,6 +125,31 @@ struct GpuCamera {
     unsigned int rand_seed_init_count;
 };
 
+enum CsgOperation {
+    UNION = 0,
+    INTERSECTION = 1,
+    DIFFERENCE  = 2,
+    // Extend as needed
+};
+
+#define MAX_LEAFS 64
+#define INVALID_LEAF 0xFFFFFFFFu
+
+struct GpuCsgTree {
+    unsigned int sdf_base_index_list[MAX_LEAFS];
+    uint16_t combination_indices[2*(MAX_LEAFS-1)];
+    uint8_t operation_list[MAX_LEAFS-1];
+
+    unsigned int material_id;
+    unsigned int tree_folding_id;
+    unsigned int leaf_count;
+    unsigned int pair_count;
+    unsigned int active;
+
+    Vec3  bound_center;   // center of an enclosing sphere for the entire CSG
+    float bound_radius;   // radius of that sphere
+};
+
 enum SdfType {
     SDF_SPHERE = 0,
     SDF_BOX    = 1,
@@ -131,7 +157,7 @@ enum SdfType {
     // Extend as needed
 };
 
-#define INVALID_TEXTURE 0xFFFFFFFFu
+#define INVALID_MATERIAL 0xFFFFFFFFu
 #define INVALID_LIGHT   0xFFFFFFFFu
 #define INVALID_FOLDING 0xFFFFFFFFu
 
@@ -145,6 +171,7 @@ struct GpuSdfObjectBase {
     unsigned int light_id;
     unsigned int lattice_folding_id;
     unsigned int active;
+    unsigned int in_csg_tree;
 };
 
 // GPU mirror of Rust GpuMaterial
@@ -293,7 +320,7 @@ __device__ Vec3 grad_sdf_box(Vec3 p, Vec3 center, Vec3 u, Vec3 v, Vec3 w, Vec3 h
     return u * g_local.x + v * g_local.y + w * g_local.z;
 }
 
-__device__ float evaluate_sdf(const GpuSdfObjectBase& obj, Vec3 p, Vec3 center) {
+__device__ __forceinline__ float evaluate_sdf(const GpuSdfObjectBase& obj, Vec3 p, Vec3 center) {
     if (obj.sdf_type == SDF_SPHERE) {
         float radius = obj.params[0];
         return sdf_sphere(center, radius, p);
@@ -304,7 +331,7 @@ __device__ float evaluate_sdf(const GpuSdfObjectBase& obj, Vec3 p, Vec3 center) 
     return 1e9;
 }
 
-__device__ Vec3 evaluate_grad_sdf(const GpuSdfObjectBase& obj, Vec3 p, Vec3 center) {
+__device__ __forceinline__ Vec3 evaluate_grad_sdf(const GpuSdfObjectBase& obj, Vec3 p, Vec3 center) {
     if (obj.sdf_type == SDF_SPHERE) {
         float radius = obj.params[0];
         return grad_sdf_sphere(center, radius, p);
@@ -401,12 +428,153 @@ __device__ Vec3 obj_mapping(
         return triplanar_sample(mat, obj, p, normal, center);
     }
 }
+struct CsgCombineResult {
+    float        d;
+    unsigned int leaf_id;
+    float        grad_sign;  // +1 or -1 (for DIFFERENCE)
+};
+
+template<int N>
+__device__ __forceinline__
+CsgCombineResult combine_distances_N(
+    float (&distances)[N],
+    unsigned int (&leaf_indices)[N],
+    const uint16_t* __restrict__ combination_indices,
+    const uint8_t*  __restrict__ operation_list,
+    const int pair_count)
+{
+    float grad_sign[N];
+    #pragma unroll
+    for (int i = 0; i < N; ++i) grad_sign[i] = 1.0f;
+
+    #pragma unroll
+    for (int j = 0; j < pair_count; ++j) {
+        const int L = combination_indices[2*j + 0];
+        const int R = combination_indices[2*j + 1];
+
+        const float dl = distances[L], dr = distances[R];
+        const float gl = grad_sign[L],  gr = grad_sign[R];
+        const CsgOperation op = (CsgOperation)operation_list[j];
+
+        if (op == UNION) {
+            if (dr < dl) { distances[L] = dr; leaf_indices[L] = leaf_indices[R]; grad_sign[L] = gr; }
+        } else if (op == INTERSECTION) {
+            if (dr > dl) { distances[L] = dr; leaf_indices[L] = leaf_indices[R]; grad_sign[L] = gr; }
+        } else { // DIFFERENCE
+            if (!(dl > -dr)) { distances[L] = -dr; leaf_indices[L] = leaf_indices[R]; grad_sign[L] = -gr; }
+        }
+    }
+
+    CsgCombineResult out;
+    out.d         = distances[0];
+    out.leaf_id   = leaf_indices[0];
+    out.grad_sign = grad_sign[0];
+    return out;
+}
+
+// kernel.cu
+
+template<int N>
+__device__ __forceinline__
+void fill_leaf_distances_N(
+    float (&dist)[N],
+    unsigned int (&leaf_idx)[N],
+    const GpuCsgTree& tree,
+    const GpuSdfObjectBase* __restrict__ sdf_objs,
+    Vec3 p,
+    const GpuSpaceFolding* __restrict__ foldings,
+    const int n_used)
+{
+    // --- precompute tree-level shift (same for all leaves) ---
+    const unsigned tree_fid = tree.tree_folding_id;
+    Vec3 tree_shift(0,0,0);
+    if (tree_fid != INVALID_FOLDING) {
+        const GpuSpaceFolding& tf = foldings[tree_fid];
+        Vec3 lc = (p - tree.bound_center) * tf.lattice_basis_inv;
+        Vec3 kf(
+            (tf.active_mask & 1u) ? roundf(lc.x) : 0.0f,
+            (tf.active_mask & 2u) ? roundf(lc.y) : 0.0f,
+            (tf.active_mask & 4u) ? roundf(lc.z) : 0.0f
+        );
+        tree_shift = kf * tf.lattice_basis;
+    }
+
+    #pragma unroll
+    for (int k = 0; k < N; ++k) {
+        if (k < n_used) {
+            const unsigned int sdf_id = tree.sdf_base_index_list[k];
+            leaf_idx[k] = k;
+
+            const GpuSdfObjectBase& src = sdf_objs[sdf_id];
+            Vec3 c = src.center;
+
+            if (tree_fid != INVALID_FOLDING) {
+                // tree-level folding applies to the whole shape: same shift for all leaves
+                c = c + tree_shift;
+            } else if (src.lattice_folding_id != INVALID_FOLDING) {
+                // fallback: per-leaf folding (your previous logic)
+                const GpuSpaceFolding& fold = foldings[src.lattice_folding_id];
+                Vec3 diff = p - c;
+                Vec3 lc   = diff * fold.lattice_basis_inv;
+                Vec3 kf(
+                    (fold.active_mask & 1u) ? roundf(lc.x) : 0.0f,
+                    (fold.active_mask & 2u) ? roundf(lc.y) : 0.0f,
+                    (fold.active_mask & 4u) ? roundf(lc.z) : 0.0f
+                );
+                c = c + kf * fold.lattice_basis;
+            }
+
+            // IMPORTANT: keep the true SDF (no “inside override”)
+            dist[k] = evaluate_sdf(src, p, c);
+        } else {
+            leaf_idx[k] = 0;
+            dist[k]     = 1e20f;
+        }
+    }
+}
+
+
+__device__ __forceinline__
+CsgCombineResult eval_tree_dispatch(
+    const GpuCsgTree& tree,
+    const GpuSdfObjectBase* __restrict__ sdf_objs,
+    const GpuSpaceFolding* __restrict__ foldings,
+    Vec3 p)
+{
+    int n = (int)tree.leaf_count;
+    if (n <= 0) { return CsgCombineResult{1e20f, 0u, 1.0f}; }
+    if (n > MAX_LEAFS) n = MAX_LEAFS;
+
+    // next power-of-two bucket (cap at 64)
+    const int bucket =
+        (n <= 2 ) ? 2  :
+        (n <= 4 ) ? 4  :
+        (n <= 8 ) ? 8  :
+        (n <= 16) ? 16 :
+        (n <= 32) ? 32 : 64;
+
+    const int pair_count = min((int)tree.pair_count, n - 1);
+
+    switch (bucket) {
+    case 2:  { float d[2];  unsigned i_[2];  fill_leaf_distances_N<2 >(d,i_,tree,sdf_objs,p,foldings,n); return combine_distances_N<2 >(d,i_,tree.combination_indices,tree.operation_list,pair_count); }
+    case 4:  { float d[4];  unsigned i_[4];  fill_leaf_distances_N<4 >(d,i_,tree,sdf_objs,p,foldings,n); return combine_distances_N<4 >(d,i_,tree.combination_indices,tree.operation_list,pair_count); }
+    case 8:  { float d[8];  unsigned i_[8];  fill_leaf_distances_N<8 >(d,i_,tree,sdf_objs,p,foldings,n); return combine_distances_N<8 >(d,i_,tree.combination_indices,tree.operation_list,pair_count); }
+    case 16: { float d[16]; unsigned i_[16]; fill_leaf_distances_N<16>(d,i_,tree,sdf_objs,p,foldings,n); return combine_distances_N<16>(d,i_,tree.combination_indices,tree.operation_list,pair_count); }
+    case 32: { float d[32]; unsigned i_[32]; fill_leaf_distances_N<32>(d,i_,tree,sdf_objs,p,foldings,n); return combine_distances_N<32>(d,i_,tree.combination_indices,tree.operation_list,pair_count); }
+    default: { float d[64]; unsigned i_[64]; fill_leaf_distances_N<64>(d,i_,tree,sdf_objs,p,foldings,n); return combine_distances_N<64>(d,i_,tree.combination_indices,tree.operation_list,pair_count); }
+    }
+}
+
+
+
 
 extern "C" __global__
 void raymarch(
     int width, int height,
     GpuCamera* cameras,
     int camera_index,
+    const GpuCsgTree* __restrict__ csg_trees,
+    int num_trees,
     const GpuSdfObjectBase* __restrict__ sdf_objs,
     int num_objs,
     const GpuMaterial* __restrict__ materials,
@@ -433,7 +601,7 @@ void raymarch(
 
     Vec3 p = origin;
     float total_dist = 0.0f;
-    const float eps      = 0.001f;
+    const float eps      = 0.01f;
     const float max_dist = 200.0f;
     const int   max_steps = 100;
 
@@ -444,6 +612,9 @@ void raymarch(
     // temp copy for per‐object folding
     Vec3 center;
     Vec3 center_min;
+    unsigned int best_tree_material = INVALID_MATERIAL;
+    unsigned int best_tree_folding = INVALID_FOLDING;
+    float best_grad_sign = 1.0f;
 
     bool hit = false;
     while (steps < max_steps) {
@@ -453,7 +624,7 @@ void raymarch(
         for (int j = 0; j < num_objs; ++j) {
             const GpuSdfObjectBase& src = sdf_objs[j];
             center = src.center;
-            if (src.active == 0) continue;
+            if (src.active == 0 || src.in_csg_tree != 0) continue;
 
             // folding?
             unsigned fid = src.lattice_folding_id;
@@ -481,14 +652,87 @@ void raymarch(
                 center_min = center;
                 min_dist = d;
                 best_j   = j;
+                best_tree_material = INVALID_MATERIAL;
+                best_tree_folding  = INVALID_FOLDING;
+                best_grad_sign     = 1.0f;
             }
         }
 
-        if (best_j < 0 || min_dist < eps || total_dist > max_dist) {
-            if (min_dist < eps) {
-                hit = true;
+        for (int j = 0; j < num_trees; ++j) {
+            const GpuCsgTree& src_tree = csg_trees[j];
+
+            Vec3 bc = src_tree.bound_center;
+            if (src_tree.tree_folding_id != INVALID_FOLDING) {
+                const GpuSpaceFolding& tf = foldings[src_tree.tree_folding_id];
+                Vec3 lc = (p - bc) * tf.lattice_basis_inv;
+                Vec3 kf(
+                    (tf.active_mask & 1u) ? roundf(lc.x) : 0.0f,
+                    (tf.active_mask & 2u) ? roundf(lc.y) : 0.0f,
+                    (tf.active_mask & 4u) ? roundf(lc.z) : 0.0f
+                );
+                bc = bc + kf * tf.lattice_basis;  // nearest repeated bound
             }
-            break;
+            Vec3 vc = p - bc;
+            float thr = min_dist + src_tree.bound_radius;
+            if (Vec3::dot(vc, vc) >= thr*thr) continue;
+
+
+            CsgCombineResult comb = eval_tree_dispatch(src_tree, sdf_objs, foldings, p);
+            float d = comb.d;
+
+            if (d < min_dist) {
+                unsigned int leaf_pos = comb.leaf_id;
+                unsigned int sdf_id   = src_tree.sdf_base_index_list[leaf_pos];
+
+                const GpuSdfObjectBase& wsrc = sdf_objs[sdf_id];
+                Vec3 wcenter = wsrc.center;
+
+                if (src_tree.tree_folding_id != INVALID_FOLDING) {
+                    const GpuSpaceFolding& tf = foldings[src_tree.tree_folding_id];
+                    Vec3 diff = p - wcenter;
+                    Vec3 lc   = diff * tf.lattice_basis_inv;
+                    Vec3 kf(
+                        (tf.active_mask & 1u) ? roundf(lc.x) : 0.0f,
+                        (tf.active_mask & 2u) ? roundf(lc.y) : 0.0f,
+                        (tf.active_mask & 4u) ? roundf(lc.z) : 0.0f
+                    );
+                    wcenter = wcenter + kf * tf.lattice_basis;
+                    if (d < 0){
+                        float min_half_thickness = tf.min_half_thickness;
+                        float center_dist = diff.length();
+                        d = min_half_thickness - center_dist;
+                    }
+                } else if (wsrc.lattice_folding_id != INVALID_FOLDING) {
+                    const GpuSpaceFolding& fold = foldings[wsrc.lattice_folding_id];
+                    Vec3 diff = p - wcenter;
+                    Vec3 lc   = diff * fold.lattice_basis_inv;
+                    Vec3 kf(
+                        (fold.active_mask & 1u) ? roundf(lc.x) : 0.0f,
+                        (fold.active_mask & 2u) ? roundf(lc.y) : 0.0f,
+                        (fold.active_mask & 4u) ? roundf(lc.z) : 0.0f
+                    );
+                    wcenter = wcenter + kf * fold.lattice_basis;
+                    if (d < 0){
+                        float min_half_thickness = fold.min_half_thickness;
+                        float center_dist = diff.length();
+                        d = min_half_thickness - center_dist;
+                    }
+                }
+
+                center_min         = wcenter;
+                min_dist           = d;
+                best_j             = (int)sdf_id;
+                best_tree_folding  = src_tree.tree_folding_id;
+                best_tree_material = src_tree.material_id;
+                best_grad_sign     = comb.grad_sign;
+
+            }
+        }
+        if (best_j < 0 || min_dist < eps || total_dist > max_dist) {
+                if (min_dist < eps) {
+                    hit = true;
+                }
+                break;
         }
 
         p = p + dir * min_dist;
@@ -501,13 +745,13 @@ void raymarch(
     if (best_j >= 0 && hit) {
         // reconstruct final eval for shading (including fold)
         const GpuSdfObjectBase& eval = sdf_objs[best_j];
-        unsigned fid = eval.lattice_folding_id;
+
+        unsigned int mid;
+        if (best_tree_material != INVALID_MATERIAL) {mid = best_tree_material;} else {mid = eval.material_id;}
         
-        if (eval.material_id != INVALID_TEXTURE) {
+        if (mid != INVALID_MATERIAL) {
             
-            const GpuMaterial& mat = materials[ eval.material_id ];
-            // normal
-            Vec3 normal = evaluate_grad_sdf(eval, p, center_min) * -1.0f;
+            const GpuMaterial& mat = materials[ mid ];
 
             if (mat.use_texture) {
                 color = obj_mapping(mat, eval, p, center_min);
@@ -515,9 +759,11 @@ void raymarch(
                 color = Vec3(mat.color[0], mat.color[1], mat.color[2]);
             }
 
+            Vec3 normal = (evaluate_grad_sdf(eval, p, center_min) * (-1.0f * best_grad_sign)).normalize();
             Vec3 L = Vec3(0.5f,-1.0f,-0.6f).normalize();
+
             float lam = fmaxf(0.0f, Vec3::dot(normal, L));
-            color = color*lam;
+            color = color*fminf(lam+0.3,1.0);
             if (cam.spp > 1) {
                 accumulate(cam.accum, color, i);
             }
@@ -529,9 +775,9 @@ void raymarch(
         }
     }
     else {
-                cam.image[i*3 + 0] = color.x * 255.0f;
-                cam.image[i*3 + 1] = color.y * 255.0f;
-                cam.image[i*3 + 2] = color.z * 255.0f;
+                cam.image[i*3 + 0] = 0.6f*135.0f;
+                cam.image[i*3 + 1] = 0.6f*206.0f; // blue sky background
+                cam.image[i*3 + 2] = 0.6f*235.0f;
     }
 }
 

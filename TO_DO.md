@@ -19,6 +19,7 @@
 # ECS
 - add some basic physics simulations
 - faire des arbres de dependances/contraintes/interactions entre entities
+- CSG: add reducing tree feature (reduce expressions of trees to unions of subtrees for compute effeciency)
 
 # main
 - make the code more sustainable over time

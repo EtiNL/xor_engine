@@ -1,27 +1,28 @@
 mod cuda_wrapper;
 mod display;
 mod ecs;
+mod scene;
 
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
-use std::error::Error;
-use std::ffi::c_void;
-use std::sync::{Arc, Mutex};
-use std::time::{Instant, Duration};
-use std::path::Path;
-use cuda_driver_sys::cuGraphAddDependencies;
+use std::{error::Error, ffi::c_void, sync::{Arc, Mutex}, time::Instant, path::Path};
 use cuda_driver_sys::CUdeviceptr;
 
 use display::{Display, FpsCounter};
-use cuda_wrapper::{CudaContext, dim3, CameraBuffers};
-use ecs::ecs::{World, update_rotation, Transform, Camera, SdfBase, MaterialComponent, Rotating, SpaceFolding, Axis};
-use ecs::math_op::math_op::{Vec3, Quat, Mat3};
-use crate::ecs::ecs_gpu_interface::ecs_gpu_interface::{SdfType, TextureManager};
+use cuda_wrapper::{CudaContext, dim3};
+
+use ecs::ecs::World;
+use ecs::ecs::system::update_rotation;
+use ecs::ecs::components::{
+    Transform, Camera, SdfBase, SdfType, MaterialComponent, TextureManager,
+    Rotating, SpaceFolding, Axis,
+};
+use ecs::ecs::{Vec3, Quat, Mat3};
 
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let max_frames: Option<u32> = std::env::var("MAX_FRAMES").ok().and_then(|s| s.parse().ok());
-    let mut frame_count: u32 = 0;
+    let max_frames: Option<u32> = std::env::var("MAX_FRAMES").ok().and_then(|s| s.parse().ok()); //used for benchmarking with cargo gpu-nsys
+    let mut frame_count: u32 = 0; //used for benchmarking with cargo gpu-nsys
 
     // Initialization
     let mut cuda_context = CudaContext::new("./src/gpu_utils/kernel.ptx")?;
@@ -54,129 +55,57 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Texture manager stays the same
     let mut tex_mgr = TextureManager::new();
 
+    let _tree_entity = scene::spawn_demo_csg(&mut world, &mut tex_mgr)?;
+
     // — CUBE — 
-    let mut cube_ent = world.spawn();
-    world.insert_transform(cube_ent, Transform {
-        position: Vec3::new(0.0, 0.0, -10.0),
-        rotation: Quat::identity(),
-    });
-    // 1) SDF shape
-    world.insert_sdf_base(cube_ent, SdfBase {
-        sdf_type: SdfType::Cube,
-        params: [1.0, 1.0, 1.0], // half-extents
-    });
-    // 2) Material
-    let cube_tex = tex_mgr.load(Path::new("./src/textures/lines_texture.png"))?;
-    world.insert_material(cube_ent, MaterialComponent {
-        color: [0.0, 0.5, 0.5],
-        texture: Some(cube_tex),
-        use_texture: false,
-    });
-    // Space folding
+    // let mut cube_ent = world.spawn();
+    // world.insert_transform(cube_ent, Transform {
+    //     position: Vec3::new(0.0, 0.0, -10.0),
+    //     rotation: Quat::identity(),
+    // });
+    // // 1) SDF shape
+    // world.insert_sdf_base(cube_ent, SdfBase {
+    //     sdf_type: SdfType::Cube,
+    //     params: [1.0, 1.0, 1.0], // half-extents
+    // });
+    // // 2) Material
+    // let cube_tex = tex_mgr.load(Path::new("./src/textures/lines_texture.png"))?;
+    // world.insert_material(cube_ent, MaterialComponent {
+    //     color: [0.0, 0.5, 0.5],
+    //     texture: Some(cube_tex),
+    //     use_texture: false,
+    // });
+    // // Space folding
     // world.insert_space_folding(cube_ent, SpaceFolding::new_2d(Mat3::Id * 10.0, Axis::U, Axis::W));
-    // 3) Rotation
-    world.insert_rotating(cube_ent, Rotating {
-        speed_deg_per_sec: 30.0,
-    });
+    // // 3) Rotation
+    // world.insert_rotating(cube_ent, Rotating {
+    //     speed_deg_per_sec: 30.0,
+    // });
 
-    //=========================================================================================================
-
-    let mut cube_ent = world.spawn();
-    world.insert_transform(cube_ent, Transform {
-        position: Vec3::new(1.0, 0.0, -10.0),
-        rotation: Quat::identity(),
-    });
-    // 1) SDF shape
-    world.insert_sdf_base(cube_ent, SdfBase {
-        sdf_type: SdfType::Cube,
-        params: [1.0, 1.0, 1.0], // half-extents
-    });
-    // 2) Material
-    let cube_tex = tex_mgr.load(Path::new("./src/textures/lines_texture.png"))?;
-    world.insert_material(cube_ent, MaterialComponent {
-        color: [0.0, 0.5, 0.5],
-        texture: Some(cube_tex),
-        use_texture: false,
-    });
-    // Space folding
-    // world.insert_space_folding(cube_ent, SpaceFolding::new_2d(Mat3::Id * 10.0, Axis::U, Axis::W));
-    // 3) Rotation
-    world.insert_rotating(cube_ent, Rotating {
-        speed_deg_per_sec: 30.0,
-    });
-    let mut cube_ent = world.spawn();
-    world.insert_transform(cube_ent, Transform {
-        position: Vec3::new(0.0, -1.0, -10.0),
-        rotation: Quat::identity(),
-    });
-    // 1) SDF shape
-    world.insert_sdf_base(cube_ent, SdfBase {
-        sdf_type: SdfType::Cube,
-        params: [1.0, 1.0, 1.0], // half-extents
-    });
-    // 2) Material
-    let cube_tex = tex_mgr.load(Path::new("./src/textures/lines_texture.png"))?;
-    world.insert_material(cube_ent, MaterialComponent {
-        color: [0.0, 0.5, 0.5],
-        texture: Some(cube_tex),
-        use_texture: false,
-    });
-    // Space folding
-    // world.insert_space_folding(cube_ent, SpaceFolding::new_2d(Mat3::Id * 10.0, Axis::U, Axis::W));
-    // 3) Rotation
-    world.insert_rotating(cube_ent, Rotating {
-        speed_deg_per_sec: 30.0,
-    });
-    let mut cube_ent = world.spawn();
-    world.insert_transform(cube_ent, Transform {
-        position: Vec3::new(0.0, 1.0, -10.0),
-        rotation: Quat::identity(),
-    });
-    // 1) SDF shape
-    world.insert_sdf_base(cube_ent, SdfBase {
-        sdf_type: SdfType::Cube,
-        params: [1.0, 1.0, 1.0], // half-extents
-    });
-    // 2) Material
-    let cube_tex = tex_mgr.load(Path::new("./src/textures/lines_texture.png"))?;
-    world.insert_material(cube_ent, MaterialComponent {
-        color: [0.0, 0.5, 0.5],
-        texture: Some(cube_tex),
-        use_texture: false,
-    });
-    // Space folding
-    // world.insert_space_folding(cube_ent, SpaceFolding::new_2d(Mat3::Id * 10.0, Axis::U, Axis::W));
-    // 3) Rotation
-    world.insert_rotating(cube_ent, Rotating {
-        speed_deg_per_sec: 30.0,
-    });
-    
-    //===========================================================================================================
-
-    // — SPHERE — 
-    let sphere_ent = world.spawn();
-    world.insert_transform(sphere_ent, Transform {
-        position: Vec3::new(0.0, 0.0, -10.0),
-        rotation: Quat::identity(),
-    });
-    // SDF
-    world.insert_sdf_base(sphere_ent, SdfBase {
-        sdf_type: SdfType::Sphere,
-        params: [1.5, 0.0, 0.0], // radius, unused, unused
-    });
-    // Material
-    let wood_tex = tex_mgr.load(Path::new("./src/textures/Wood_texture.png"))?;
-    world.insert_material(sphere_ent, MaterialComponent {
-        color: [0.5, 0.5, 0.0],
-        texture: Some(wood_tex),
-        use_texture: false,
-    });
-    // Lattice‐folding
+    // // — SPHERE — 
+    // let sphere_ent = world.spawn();
+    // world.insert_transform(sphere_ent, Transform {
+    //     position: Vec3::new(0.0, 0.0, -10.0),
+    //     rotation: Quat::identity(),
+    // });
+    // // SDF
+    // world.insert_sdf_base(sphere_ent, SdfBase {
+    //     sdf_type: SdfType::Sphere,
+    //     params: [1.5, 0.0, 0.0], // radius, unused, unused
+    // });
+    // // Material
+    // let wood_tex = tex_mgr.load(Path::new("./src/textures/Wood_texture.png"))?;
+    // world.insert_material(sphere_ent, MaterialComponent {
+    //     color: [0.5, 0.5, 0.0],
+    //     texture: Some(wood_tex),
+    //     use_texture: false,
+    // });
+    // // Lattice‐folding
     // world.insert_space_folding(sphere_ent, SpaceFolding::new_1d(Mat3::Id * 5.0, Axis::U));
-    // Rotation
-    world.insert_rotating(sphere_ent, Rotating {
-        speed_deg_per_sec: 30.0,
-    });
+    // // Rotation
+    // world.insert_rotating(sphere_ent, Rotating {
+    //     speed_deg_per_sec: 30.0,
+    // });
 
     // Initialize the SDL2 context
     let mut display = Display::new(
@@ -220,6 +149,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut cam_ptr: CUdeviceptr = world.gpu_cameras.ptr();
     let mut cam_index: u32 = world.active_camera_index() as u32;
 
+    let mut csg_ptr: CUdeviceptr = world.gpu_csg_trees.ptr();
+    let mut num_csg: u32 = world.gpu_csg_trees.len as u32;
+
     let mut sdf_ptr: CUdeviceptr = world.gpu_sdf_objects.ptr();
     let mut num_sdfs: u32 = world.gpu_sdf_objects.len as u32;
 
@@ -234,16 +166,18 @@ fn main() -> Result<(), Box<dyn Error>> {
         &cam_index as *const _ as *const c_void,
     ];
 
-    let params_raymarch: [*const c_void; 9] = [
-        &width   as *const _ as *const c_void,
-        &height  as *const _ as *const c_void,
-        &cam_ptr      as *const _ as *const c_void,
+    let params_raymarch: [*const c_void; 11] = [
+        &width     as *const _ as *const c_void,
+        &height    as *const _ as *const c_void,
+        &cam_ptr   as *const _ as *const c_void,
         &cam_index as *const _ as *const c_void,
-        &sdf_ptr      as *const _ as *const c_void,
-        &num_sdfs as *const _ as *const c_void,
-        &mat_ptr      as *const _ as *const c_void,
-        &light_ptr    as *const _ as *const c_void,
-        &fold_ptr     as *const _ as *const c_void,
+        &csg_ptr   as *const _ as *const c_void,
+        &num_csg   as *const _ as *const c_void,
+        &sdf_ptr   as *const _ as *const c_void,
+        &num_sdfs  as *const _ as *const c_void,
+        &mat_ptr   as *const _ as *const c_void,
+        &light_ptr as *const _ as *const c_void,
+        &fold_ptr  as *const _ as *const c_void,
     ];
 
     cuda_context.add_graph_kernel_node(
@@ -287,26 +221,26 @@ fn main() -> Result<(), Box<dyn Error>> {
                 },
 
                 Event::KeyDown { keycode: Some(Keycode::S), .. } => {
-                    cube_ent = world.spawn();
-                    world.insert_transform(cube_ent, Transform {
-                        position: Vec3::new(0.0, 0.0, -10.0),
-                        rotation: Quat::identity(),
-                    });
-                    world.insert_sdf_base(cube_ent, SdfBase {
-                    sdf_type: SdfType::Cube,
-                    params: [1.0,1.0,1.0],
-                    });
-                    let tex = tex_mgr.load(Path::new("./src/textures/lines_texture.png"))?;
-                    world.insert_material(cube_ent, MaterialComponent {
-                    color: [0.0 ,1.0,1.0],
-                    texture: Some(tex),
-                    use_texture: false,
-                    });
-                    world.insert_rotating(cube_ent, Rotating { speed_deg_per_sec:30.0 });
+                    // cube_ent = world.spawn();
+                    // world.insert_transform(cube_ent, Transform {
+                    //     position: Vec3::new(0.0, 0.0, -10.0),
+                    //     rotation: Quat::identity(),
+                    // });
+                    // world.insert_sdf_base(cube_ent, SdfBase {
+                    // sdf_type: SdfType::Cube,
+                    // params: [1.0,1.0,1.0],
+                    // });
+                    // let tex = tex_mgr.load(Path::new("./src/textures/lines_texture.png"))?;
+                    // world.insert_material(cube_ent, MaterialComponent {
+                    // color: [0.0 ,1.0,1.0],
+                    // texture: Some(tex),
+                    // use_texture: false,
+                    // });
+                    // world.insert_rotating(cube_ent, Rotating { speed_deg_per_sec:30.0 });
                 },
 
                 Event::MouseButtonDown { x, y, .. } => {
-                    world.despawn(cube_ent);
+                    // world.despawn(cube_ent);
 
                     let mut mouse_down_lock = mouse_down.lock().unwrap();
                     *mouse_down_lock = true;
@@ -341,6 +275,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             if !first_image {
                 cam_ptr       = world.gpu_cameras.ptr();
                 cam_index = world.active_camera_index() as u32;
+
+                csg_ptr   = world.gpu_csg_trees.ptr();
+                num_csg   = world.gpu_csg_trees.len as u32;
 
                 sdf_ptr       = world.gpu_sdf_objects.ptr();
                 num_sdfs  = world.gpu_sdf_objects.len as u32;
