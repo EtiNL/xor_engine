@@ -32,7 +32,7 @@ pub fn spawn_demo_csg(world: &mut World, _tex_mgr: &mut TextureManager) -> Resul
     world.insert_transform(e_sphere, Transform { position: center, rotation: Quat::identity() });
     world.insert_sdf_base(e_sphere, SdfBase { sdf_type: SdfType::Sphere, params: [sphere_r, 0.0, 0.0] });
     world.insert_rotating(e_sphere, Rotating { speed_deg_per_sec:30.0 });
-    world.insert_space_folding(e_sphere, SpaceFolding::new_3d(Mat3::Id * 20.0));
+    // world.insert_space_folding(e_sphere, SpaceFolding::new_3d(Mat3::Id * 20.0));
 
     let e_bx = world.spawn();
     world.insert_transform(e_bx, Transform { position: center, rotation: Quat::identity() });
@@ -41,12 +41,12 @@ pub fn spawn_demo_csg(world: &mut World, _tex_mgr: &mut TextureManager) -> Resul
 
     let e_by = world.spawn();
     world.insert_transform(e_by, Transform { position: center, rotation: Quat::identity() });
-    world.insert_sdf_base(e_by, SdfBase { sdf_type: SdfType::Cube, params: [bar.1, bar.0, bar.2] });
+    world.insert_sdf_base(e_by, SdfBase { sdf_type: SdfType::Cube, params: [5.0, 5.0, 0.4] });
     world.insert_rotating(e_by, Rotating { speed_deg_per_sec:30.0 });
 
     let e_bz = world.spawn();
     world.insert_transform(e_bz, Transform { position: center, rotation: Quat::identity() });
-    world.insert_sdf_base(e_bz, SdfBase { sdf_type: SdfType::Cube, params: [bar.2, bar.1, bar.0] });
+    world.insert_sdf_base(e_bz, SdfBase { sdf_type: SdfType::Cube, params: [5.0, 0.4, 5.0] });
     world.insert_rotating(e_bz, Rotating { speed_deg_per_sec:30.0 });
 
     // Optional distinct leaf materials (tree-level material will override if set)
