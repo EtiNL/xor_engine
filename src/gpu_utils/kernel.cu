@@ -1,7 +1,11 @@
 #include <math.h>
 #include <curand_kernel.h>
 #include <stdio.h>
-#include <stdint.h> 
+#include <stdint.h>
+
+__host__ __device__ inline float clamp(float x, float lo, float hi) {
+    return x < lo ? lo : (x > hi ? hi : x);
+}
 
 struct Vec2 {
     float x, y;
@@ -13,6 +17,9 @@ struct Vec2 {
     __device__ Vec2 operator-(const Vec2& b) const { return Vec2(x - b.x, y - b.y); }
     __device__ Vec2 operator*(float s) const { return Vec2(x * s, y * s); }
     __device__ Vec2 operator/(float s) const { return Vec2(x / s, y / s); }
+
+    static __device__ inline float dot2(const Vec2& a, const Vec2& b) { return a.x*b.x + a.y*b.y; }
+
 
 };
 struct Mat3 {
@@ -78,6 +85,10 @@ struct Vec3 {
         );
     }
 };
+
+//==========================================================================================================================================
+//==========================================================================================================================================
+//==========================================================================================================================================
 
 struct Image_ray_accum {
     int* ray_per_pixel;
@@ -154,6 +165,8 @@ enum SdfType {
     SDF_SPHERE = 0,
     SDF_BOX    = 1,
     SDF_PLANE  = 2,
+    SDF_CONE   = 3,
+    SDF_LINE   = 4,
     // Extend as needed
 };
 
@@ -197,6 +210,10 @@ struct GpuSpaceFolding {
     float min_half_thickness;
     unsigned int active_mask;    // bit0=u/X, bit1=v/Y, bit2=w/Z
 };
+
+//==================================================================================================================
+//==================================================================================================================
+//==================================================================================================================
 
 extern "C"
 __global__ void reset_accum(int* ray_per_pixel, int total_pixels) {
@@ -279,6 +296,11 @@ void generate_rays(int width, int height, GpuCamera* cameras, int camera_index)
     cam.directions[3*i + 2] = direction.z;
 }
 
+//====================================================================================================================
+//====================================================================================================================
+//====================================================================================================================
+
+
 __device__ float sdf_sphere(Vec3 sphere_center, float radius, Vec3 ray_point) {
     return Vec3::distance(sphere_center, ray_point) - radius;
 }
@@ -320,6 +342,59 @@ __device__ Vec3 grad_sdf_box(Vec3 p, Vec3 center, Vec3 u, Vec3 v, Vec3 w, Vec3 h
     return u * g_local.x + v * g_local.y + w * g_local.z;
 }
 
+__device__ float sdf_plane(Vec3 p, Vec3 center, Vec3 n) {
+    // n is the normal of the plane
+    Vec3 d = p - center;
+    return fabs(Vec3::dot(d, n));
+}
+
+__device__ Vec3 grad_sdf_plane(Vec3 n) {
+    // n is the normal of the plane
+    return n;
+}
+
+__device__ float sdf_cone(Vec3 p, Vec3 center, Vec3 u, Vec3 v, Vec3 w,
+                          float h, float rt, float rb)
+{
+    // Local coords: z=0 at base (radius rb), z=h at apex (radius rt), axis = +w
+    Vec3 d = p - center;
+    float lx = Vec3::dot(d, u);
+    float ly = Vec3::dot(d, v);
+    float lz = Vec3::dot(d, w);      // 0..h
+
+    float r  = sqrtf(lx*lx + ly*ly);
+
+    // Map to the symmetric capped-cone formulation (apex at -hh, base at +hh)
+    float hh   = 0.5f * h;           // half-height
+    float zsym = hh - lz;            // base(0)->+hh, apex(h)->-hh
+
+    Vec2 q  = Vec2(r, zsym);
+    Vec2 k1 = Vec2(rb, hh);
+    Vec2 k2 = Vec2(rb - rt, 2.0f * hh); // == h
+
+    // distance to caps' cylindrical parts
+    Vec2 ca = Vec2(q.x - fminf(q.x, (q.y < 0.0f) ? rt : rb),
+                   fabsf(q.y) - hh);
+
+    // distance to slanted side
+    float t = fminf(fmaxf(Vec2::dot2(Vec2(k1.x - q.x, k1.y - q.y), k2) /
+                          Vec2::dot2(k2, k2), 0.0f), 1.0f);
+    Vec2 cb = q - Vec2(k1.x - k2.x * t, k1.y - k2.y * t);
+
+    float s  = (cb.x < 0.0f && ca.y < 0.0f) ? -1.0f : 1.0f;
+    float d2 = fminf(Vec2::dot2(ca, ca), Vec2::dot2(cb, cb));
+    return s * sqrtf(d2);
+}
+
+__device__ float sdf_line(Vec3 p, Vec3 a, Vec3 dir, float length, float radius) {
+    // n is the normal of the plane
+    Vec3 pa = p - a;
+    Vec3 ba = dir*length;
+
+    float h = clamp(Vec3::dot(pa, ba)/Vec3::dot(ba, ba), 0.0, 1.0);
+    return (pa - ba*h).length() - radius;
+}
+
 __device__ __forceinline__ float evaluate_sdf(const GpuSdfObjectBase& obj, Vec3 p, Vec3 center) {
     if (obj.sdf_type == SDF_SPHERE) {
         float radius = obj.params[0];
@@ -327,8 +402,23 @@ __device__ __forceinline__ float evaluate_sdf(const GpuSdfObjectBase& obj, Vec3 
     } else if (obj.sdf_type == SDF_BOX) {
         Vec3 half_extents = Vec3(obj.params[0], obj.params[1], obj.params[2]);
         return sdf_box(p, center, obj.u, obj.v, obj.w, half_extents);
+    } else if (obj.sdf_type == SDF_PLANE) {
+        return sdf_plane(p, center, obj.v);
+    } else if (obj.sdf_type == SDF_CONE) {
+        return sdf_cone(p, center, obj.u, obj.v, obj.w, obj.params[0], obj.params[1], obj.params[2]);
+    } else if (obj.sdf_type == SDF_LINE) {
+        return sdf_line(p, center, obj.w, obj.params[0], obj.params[1]);
     }
     return 1e9;
+}
+__device__ __forceinline__ Vec3 auto_grad_sdf(const GpuSdfObjectBase& obj, Vec3 p, Vec3 center) {
+    float eps = 0.001;
+    Vec3 grad = Vec3(
+        (evaluate_sdf(obj, p, center) - evaluate_sdf(obj, p+Vec3(eps, 0.0, 0.0), center))/eps,
+        (evaluate_sdf(obj, p, center) - evaluate_sdf(obj, p+Vec3(0.0, eps, 0.0), center))/eps,
+        (evaluate_sdf(obj, p, center) - evaluate_sdf(obj, p+Vec3(0.0, 0.0, eps), center))/eps
+    );
+    return grad;
 }
 
 __device__ __forceinline__ Vec3 evaluate_grad_sdf(const GpuSdfObjectBase& obj, Vec3 p, Vec3 center) {
@@ -338,8 +428,16 @@ __device__ __forceinline__ Vec3 evaluate_grad_sdf(const GpuSdfObjectBase& obj, V
     } else if (obj.sdf_type == SDF_BOX) {
         Vec3 half_extents = Vec3(obj.params[0], obj.params[1], obj.params[2]);
         return grad_sdf_box(p, center, obj.u, obj.v, obj.w, half_extents);
+    } else if (obj.sdf_type == SDF_PLANE) {
+        return grad_sdf_plane(obj.v);
+    } else {
+        return auto_grad_sdf(obj, p, center);
     }
 }
+
+//====================================================================================================================
+//====================================================================================================================
+//====================================================================================================================
 
 // sample from the raw 3-channel byte buffer in the material
 __device__ Vec3 sample_texture(
@@ -428,6 +526,12 @@ __device__ Vec3 obj_mapping(
         return triplanar_sample(mat, obj, p, normal, center);
     }
 }
+
+//=======================================================================================================================
+//=======================================================================================================================
+//=======================================================================================================================
+
+
 struct CsgCombineResult {
     float        d;
     unsigned int leaf_id;
@@ -566,7 +670,9 @@ CsgCombineResult eval_tree_dispatch(
 }
 
 
-
+//=======================================================================================================================================
+//=======================================================================================================================================
+//=======================================================================================================================================
 
 extern "C" __global__
 void raymarch(
@@ -602,7 +708,7 @@ void raymarch(
     Vec3 p = origin;
     float total_dist = 0.0f;
     const float eps      = 0.01f;
-    const float max_dist = 200.0f;
+    const float max_dist = 100.0f;
     const int   max_steps = 100;
 
     int steps    = 0;

@@ -12,10 +12,10 @@ use display::{Display, FpsCounter};
 use cuda_wrapper::{CudaContext, dim3};
 
 use ecs::ecs::World;
-use ecs::ecs::system::update_rotation;
+use ecs::ecs::system::{update_rotation, move_entity};
 use ecs::ecs::components::{
     Transform, Camera, SdfBase, SdfType, MaterialComponent, TextureManager,
-    Rotating, SpaceFolding, Axis,
+    Rotating, SpaceFolding, Axis
 };
 use ecs::ecs::{Vec3, Quat, Mat3};
 
@@ -50,11 +50,22 @@ fn main() -> Result<(), Box<dyn Error>> {
         position: Vec3::new(0.0, 2.0, 3.0),
         rotation: Quat::identity(),
     });
-    world.active_camera(cam_ent); 
+    world.active_camera(cam_ent);
+    world.insert_rotating(cam_ent, Rotating {
+            speed_deg_per_sec: 30.0,
+        });
 
     // Texture manager stays the same
     let mut tex_mgr = TextureManager::new();
-
+    
+    let basis_ent = scene::spawn_basis_gizmo(
+        &mut world,
+        Vec3::new(0.0, 0.0, -10.0), // origin
+        1.4,   // axis_len
+        0.06,  // shaft_radius
+        0.32,  // cone_half_h
+        0.14,  // cone_base_r
+    )?;
     let _tree_entity = scene::spawn_demo_csg(&mut world, &mut tex_mgr)?;
 
     // — CUBE — 
@@ -132,6 +143,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Allocate GPU memory
     let mut first_image: bool = true;
+    
     world.update_scene(&mut tex_mgr)?;
 
     // grid dim and block dim
@@ -196,48 +208,29 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut rotation_dir_x_axis = 0.0f32;
     let mut rotation_dir_y_axis = 0.0f32;
 
+    // ── Camera input state ──────────────────────────────────
+    let mut cam_yaw_dir: f32 = 0.0; // ← = -1, → = +1
+    let mut cam_pitch_dir: f32 = 0.0; // ↑ = -1 (look up), ↓ = +1 (look down)
+    let mut cam_forward: bool = false; // SPACE held → move forward
+
     // Main loop
     'running: loop {
         for event in display.poll_events() {
             match event {
                 Event::Quit { .. } => break 'running,
-                Event::KeyDown { keycode: Some(Keycode::Left), .. } => {
-                    rotation_dir_y_axis = -1.0;
-                },
-                Event::KeyDown { keycode: Some(Keycode::Right), .. } => {
-                    rotation_dir_y_axis = 1.0;
-                },
-                Event::KeyUp { keycode: Some(Keycode::Left | Keycode::Right), .. } => {
-                    rotation_dir_y_axis = 0.0;
-                },
-                Event::KeyDown { keycode: Some(Keycode::Up), .. } => {
-                    rotation_dir_x_axis = -1.0;
-                },
-                Event::KeyDown { keycode: Some(Keycode::Down), .. } => {
-                    rotation_dir_x_axis = 1.0;
-                },
-                Event::KeyUp { keycode: Some(Keycode::Up | Keycode::Down), .. } => {
-                    rotation_dir_x_axis = 0.0;
-                },
 
-                Event::KeyDown { keycode: Some(Keycode::S), .. } => {
-                    // cube_ent = world.spawn();
-                    // world.insert_transform(cube_ent, Transform {
-                    //     position: Vec3::new(0.0, 0.0, -10.0),
-                    //     rotation: Quat::identity(),
-                    // });
-                    // world.insert_sdf_base(cube_ent, SdfBase {
-                    // sdf_type: SdfType::Cube,
-                    // params: [1.0,1.0,1.0],
-                    // });
-                    // let tex = tex_mgr.load(Path::new("./src/textures/lines_texture.png"))?;
-                    // world.insert_material(cube_ent, MaterialComponent {
-                    // color: [0.0 ,1.0,1.0],
-                    // texture: Some(tex),
-                    // use_texture: false,
-                    // });
-                    // world.insert_rotating(cube_ent, Rotating { speed_deg_per_sec:30.0 });
-                },
+                Event::KeyDown { keycode: Some(Keycode::Left), repeat: false, .. } => { cam_yaw_dir = -1.0; },
+                Event::KeyDown { keycode: Some(Keycode::Right), repeat: false, .. } => { cam_yaw_dir = 1.0; },
+                Event::KeyUp { keycode: Some(Keycode::Left), .. } => { if cam_yaw_dir < 0.0 { cam_yaw_dir = 0.0; } },
+                Event::KeyUp { keycode: Some(Keycode::Right), .. } => { if cam_yaw_dir > 0.0 { cam_yaw_dir = 0.0; } },
+            
+                Event::KeyDown { keycode: Some(Keycode::Up), repeat: false, .. } => { cam_pitch_dir = -1.0; },
+                Event::KeyDown { keycode: Some(Keycode::Down), repeat: false, .. } => { cam_pitch_dir = 1.0; },
+                Event::KeyUp { keycode: Some(Keycode::Up), .. } => { if cam_pitch_dir < 0.0 { cam_pitch_dir = 0.0; } },
+                Event::KeyUp { keycode: Some(Keycode::Down), .. } => { if cam_pitch_dir > 0.0 { cam_pitch_dir = 0.0; } },
+            
+                Event::KeyDown { keycode: Some(Keycode::Space), repeat: false, .. } => { cam_forward = true; },
+                Event::KeyUp { keycode: Some(Keycode::Space), .. } => { cam_forward = false; },
 
                 Event::MouseButtonDown { x, y, .. } => {
                     // world.despawn(cube_ent);
@@ -265,9 +258,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         let dt = now.duration_since(last_frame_time).as_secs_f32();
         last_frame_time = now;
 
-        if (rotation_dir_y_axis != 0.0) || (rotation_dir_x_axis != 0.0){
-            let rotation_dir: Vec3 = Vec3{x:rotation_dir_x_axis, y:rotation_dir_y_axis, z: 0.0};
-            update_rotation(&mut world, dt, rotation_dir);
+        if cam_yaw_dir != 0.0 || cam_pitch_dir != 0.0 || cam_forward {
+            // move_entity(&mut world, basis_ent, dt, cam_yaw_dir, cam_pitch_dir, cam_forward);
+            move_entity(&mut world, cam_ent, dt, cam_yaw_dir, cam_pitch_dir, cam_forward);
         }
 
         if first_image || world.update_scene(&mut tex_mgr)? {

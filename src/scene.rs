@@ -9,6 +9,66 @@ use crate::ecs::ecs::components::{
 };
 use crate::ecs::ecs::{Vec3, Quat, Mat3};
 
+/// Spawn an orthonormal-basis gizmo (X/Y/Z):
+/// each axis = one Line (shaft) + one Cone (arrowhead).
+/// Returns the *root* entity so you can move/rotate it.
+pub fn spawn_basis_gizmo(
+    world: &mut World,
+    origin: Vec3,
+    axis_len: f32,
+    shaft_radius: f32,
+    cone_h: f32,
+    cone_base_r: f32,
+) -> Result<Entity, Box<dyn std::error::Error>> {
+    let root = world.spawn_group("basis_gizmo");
+    world.insert_transform(root, Transform { position: origin, rotation: Quat::identity() });
+
+    let col_x = [0.90, 0.25, 0.25];
+    let col_y = [0.25, 0.90, 0.25];
+    let col_z = [0.25, 0.45, 0.95];
+
+    // Map local +Z to axis
+    let rot_w_to_x = Quat::from_axis_angle(Vec3::Y, (90.0f32).to_radians()); // Z→X
+    let rot_w_to_y = Quat::from_axis_angle(Vec3::X, (-90.0f32).to_radians()); // Z→Y
+    let rot_w_to_z = Quat::identity();                                        // Z→Z
+
+    // Build one axis entirely in *local* space of the gizmo root
+    let mut build_axis = |axis_dir: Vec3, rot: Quat, color: [f32;3]| -> Result<(), Box<dyn std::error::Error>> {
+        // Shaft
+        let e_line = world.spawn();
+        world.insert_sdf_base(e_line, SdfBase { sdf_type: SdfType::Line, params: [axis_len, shaft_radius, 0.0] });
+        world.insert_material(e_line, MaterialComponent { color, texture: None, use_texture: false });
+        world.set_parent(
+            root,
+            e_line,
+            Some(Transform { position: Vec3::default(), rotation: rot }) // local: start at origin, +Z along axis
+        );
+
+        // Arrowhead: with your CUDA change (base at z=0, apex at z=+h) we place the cone’s
+        // **center** at the end of the shaft (local z = axis_len), letting the kernel interpret
+        // its geometry relative to that local frame.
+        let e_cone = world.spawn();
+        world.insert_sdf_base(e_cone, SdfBase { sdf_type: SdfType::Cone, params: [cone_h, 0.0, cone_base_r] });
+        world.insert_material(e_cone, MaterialComponent { color, texture: None, use_texture: false });
+        world.set_parent(
+            root,
+            e_cone,
+            Some(Transform { position: axis_dir * axis_len, rotation: rot }) // local position at shaft end
+        );
+
+        Ok(())
+    };
+
+    // Build the 3 axes (all positive directions; no extra flips)
+    build_axis(Vec3::X, rot_w_to_x, col_x)?;
+    build_axis(Vec3::Y, rot_w_to_y, col_y)?;
+    build_axis(Vec3::Z, rot_w_to_z, col_z)?;
+
+    Ok(root)
+}
+
+
+
 /// Spawn a CSG: Sphere \ Difference( BoxX ∪ BoxY ∪ BoxZ )
 ///
 /// Visually this carves 3 orthogonal slots through a sphere, like a "rounded cross".
@@ -22,6 +82,55 @@ pub fn spawn_demo_csg(world: &mut World, _tex_mgr: &mut TextureManager) -> Resul
     }
     impl std::error::Error for SceneBuildError {}
 
+    // plane
+    let e_plane = world.spawn();
+    world.insert_transform(e_plane, Transform {
+            position: Vec3::new(0.0, -3.0, 0.0),
+            rotation: Quat::identity(),
+        });
+    world.insert_sdf_base(e_plane, SdfBase {
+        sdf_type: SdfType::Plane,
+        params: [0.0, 0.0, 0.0], // unused, unused, unused
+    });
+    // Material
+    world.insert_material(e_plane, MaterialComponent {
+        color: [0.5, 0.9, 0.5],
+        texture: None,
+        use_texture: false,
+    });
+
+    // COne
+    let e_cone = world.spawn();
+    world.insert_transform(e_cone, Transform {
+        position: Vec3::new(1.5, 0.0, -10.0),
+        rotation: Quat::identity()*Quat::from_axis_angle(Vec3::X, 90.0), // axis = world +Z (forward). Rotate if you want.
+    });
+    world.insert_sdf_base(e_cone, SdfBase {
+        sdf_type: SdfType::Cone,
+        params: [2.5, 0.0, 1.5],   // [half_height, radius_top, radius_bottom]
+    });
+    world.insert_material(e_cone, MaterialComponent {
+        color: [0.9, 0.6, 0.3],
+        texture: None,
+        use_texture: false,
+    });
+
+    // Line
+    let e_line = world.spawn();
+    world.insert_transform(e_line, Transform {
+        position: Vec3::new(1.5, -2.0, -10.0),
+        rotation: Quat::identity()*Quat::from_axis_angle(Vec3::X, 90.0), // axis = world +Z (forward). Rotate if you want.
+    });
+    world.insert_sdf_base(e_line, SdfBase {
+        sdf_type: SdfType::Line,
+        params: [5.0, 0.5, 0.0],   // [length, radius, unused]
+    });
+    world.insert_material(e_line, MaterialComponent {
+        color: [0.3, 0.6, 0.3],
+        texture: None,
+        use_texture: false,
+    });
+
     // --- Parameters ---
     let center = Vec3::new(0.0, 1.0, -12.0);
     let sphere_r = 3.0f32;
@@ -31,23 +140,23 @@ pub fn spawn_demo_csg(world: &mut World, _tex_mgr: &mut TextureManager) -> Resul
     let e_sphere = world.spawn();
     world.insert_transform(e_sphere, Transform { position: center, rotation: Quat::identity() });
     world.insert_sdf_base(e_sphere, SdfBase { sdf_type: SdfType::Sphere, params: [sphere_r, 0.0, 0.0] });
-    world.insert_rotating(e_sphere, Rotating { speed_deg_per_sec:30.0 });
+    // world.insert_rotating(e_sphere, Rotating { speed_deg_per_sec:30.0 });
     // world.insert_space_folding(e_sphere, SpaceFolding::new_3d(Mat3::Id * 20.0));
 
     let e_bx = world.spawn();
     world.insert_transform(e_bx, Transform { position: center, rotation: Quat::identity() });
     world.insert_sdf_base(e_bx, SdfBase { sdf_type: SdfType::Cube, params: [bar.0, bar.1, bar.2] });
-    world.insert_rotating(e_bx, Rotating { speed_deg_per_sec:30.0 });
+    // world.insert_rotating(e_bx, Rotating { speed_deg_per_sec:30.0 });
 
     let e_by = world.spawn();
     world.insert_transform(e_by, Transform { position: center, rotation: Quat::identity() });
     world.insert_sdf_base(e_by, SdfBase { sdf_type: SdfType::Cube, params: [5.0, 5.0, 0.4] });
-    world.insert_rotating(e_by, Rotating { speed_deg_per_sec:30.0 });
+    // world.insert_rotating(e_by, Rotating { speed_deg_per_sec:30.0 });
 
     let e_bz = world.spawn();
     world.insert_transform(e_bz, Transform { position: center, rotation: Quat::identity() });
     world.insert_sdf_base(e_bz, SdfBase { sdf_type: SdfType::Cube, params: [5.0, 0.4, 5.0] });
-    world.insert_rotating(e_bz, Rotating { speed_deg_per_sec:30.0 });
+    // world.insert_rotating(e_bz, Rotating { speed_deg_per_sec:30.0 });
 
     // Optional distinct leaf materials (tree-level material will override if set)
     world.insert_material(e_sphere, MaterialComponent { color: [0.95, 0.92, 0.85], texture: None, use_texture: false });
@@ -58,7 +167,7 @@ pub fn spawn_demo_csg(world: &mut World, _tex_mgr: &mut TextureManager) -> Resul
     // --- CSG tree entity ---
     let e_tree = world.spawn();
     world.insert_material(e_tree, MaterialComponent { color: [0.85, 0.4, 0.2], texture: None, use_texture: false });
-    // world.insert_space_folding(e_tree, SpaceFolding::new_3d(Mat3::Id * 20.0));
+    world.insert_space_folding(e_tree, SpaceFolding::new_3d(Mat3::Id * 20.0));
 
     // --- Build the binary, connected CSG tree ---
     let mut tree = CsgTree::new();

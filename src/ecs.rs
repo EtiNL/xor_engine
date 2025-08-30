@@ -16,7 +16,7 @@ pub mod ecs {
 
     use self::components::{
         Camera, SdfBase, MaterialComponent, LightComponent, SpaceFolding, Transform, Rotating,
-        TextureManager, GpuCamera, GpuSdfObjectBase, GpuMaterial, GpuLight, GpuSpaceFolding, CsgTree, GpuCsgTree,
+        TextureManager, GpuCamera, GpuSdfObjectBase, GpuMaterial, GpuLight, GpuSpaceFolding, CsgTree, GpuCsgTree, Group, Parent, RigidBody, Constraint
     };
 
     // Entity
@@ -110,6 +110,16 @@ pub mod ecs {
             }
         }
 
+        pub fn is_dirty(&self, e: Entity) -> bool {
+            let idx = e.index as usize;
+            if let Some(&slot) = self.sparse.get(idx){
+                if slot != u32::MAX {
+                    return self.dirty_flags[slot as usize]
+                }
+            }
+            return false
+        }
+
         pub fn contains(&self, idx: usize) -> bool {
             idx < self.sparse.len() && self.sparse[idx] != u32::MAX
         }
@@ -154,6 +164,11 @@ pub mod ecs {
         space_foldings: SparseSet<SpaceFolding>,
         transforms: SparseSet<Transform>,
         rotatings: SparseSet<Rotating>,
+        objects:        SparseSet<Group>,
+        object_members: SparseSet<Parent>,
+        rigid_bodies:   SparseSet<RigidBody>,
+        joints:         SparseSet<Constraint>,
+
 
         // GPU-side index maps
         camera_gpu_indices: GpuIndexMap,
@@ -192,6 +207,10 @@ pub mod ecs {
                 space_foldings: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
                 transforms: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
                 rotatings: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
+                objects: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
+                object_members: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
+                rigid_bodies:   SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
+                joints:         SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
                 
                 camera_gpu_indices: GpuIndexMap::new(),
                 csg_tree_gpu_indices: GpuIndexMap::new(),
@@ -243,6 +262,9 @@ pub mod ecs {
         // Full initial upload: builds all GPU-side counterparts from existing host components.
         pub fn update_scene(&mut self, texture_manager: &mut TextureManager) -> Result<bool, Box<dyn Error>> {
             let mut scene_updated = false;
+
+            for _ in 0..2 { self.update_hierarchy(); } // shallow nesting
+            self.solve_constraints(4); // a few iterations for stability
         
             // 1. Handle removals first
             while let Some(entity_idx) = self.entities_to_remove_from_gpu.pop() {
@@ -306,6 +328,8 @@ pub mod ecs {
         include!("ecs/components/space_folding.rs");
         include!("ecs/components/rotating.rs");
         include!("ecs/components/csg_tree.rs");
+        include!("ecs/components/group.rs");
+        include!("ecs/components/constraint.rs");
     }
 
     /* ===== systems under ecs::system ===== */
@@ -313,5 +337,6 @@ pub mod ecs {
         use crate::ecs::ecs::{World, Entity};
         use crate::ecs::math_op::math_op::{Vec3, Quat};
         include!("ecs/system/rotation.rs");
+        include!("ecs/system/camera_movement.rs");
     }
 }

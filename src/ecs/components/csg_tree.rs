@@ -280,9 +280,6 @@ impl CsgTree {
         }
 
         // 6) Finally remove this node from the arena and return it
-        self.nodes.remove(k);
-
-        // 6) Finally remove this node from the arena and return it
         if let Some(removed) = self.nodes.remove(k) {
             if let NodeType::Leaf(ent) = removed.node_type {
                 self.leaf_entities.remove(&ent);
@@ -519,6 +516,16 @@ impl World {
                         // If you do have planes in trees, consider skipping them instead
                         // of using a huge radius; otherwise this will dominate the bound.
                         SdfType::Plane => 1e6,
+                        SdfType::Cone   => {
+                            let h  = sdf.params[0].abs();               // half-height
+                            let rt = sdf.params[1].abs();
+                            let rb = sdf.params[2].abs();
+                            let rmax = rt.max(rb);
+                            (h*h + rmax*rmax).sqrt()                    // encloses the cone
+                        }
+                        SdfType::Line => {
+                            sdf.params[0] // line length
+                        }
                     }
                 } else { 0.0 };
                 leaf_r.push(r);

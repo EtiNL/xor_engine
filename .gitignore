@@ -2,3 +2,4 @@
 Cargo.lock
 /src/gpu_utils/kernel.ptx
 /profiles
+code_to_aggregate.txt
