@@ -19,6 +19,8 @@ pub mod ecs {
         TextureManager, GpuCamera, GpuSdfObjectBase, GpuMaterial, GpuLight, GpuSpaceFolding, CsgTree, GpuCsgTree, Group, Parent, RigidBody, Constraint
     };
 
+    use self::system::InputState;
+
     // Entity
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub struct Entity {
@@ -155,6 +157,9 @@ pub mod ecs {
         spawned_entities: Vec<u32>,
         entities_to_remove_from_gpu: Vec<u32>,
 
+        // user input management
+        pub input: InputState,
+
         // component pools
         cameras: SparseSet<Camera>,
         csg_trees: SparseSet<CsgTree>,
@@ -198,6 +203,8 @@ pub mod ecs {
     
                 spawned_entities: vec![],
                 entities_to_remove_from_gpu: vec![],
+
+                input: InputState::default(),
                 
                 cameras: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
                 csg_trees: SparseSet { dense_entities: vec![], dense_data: vec![], sparse: vec![], dirty_flags: vec![] },
@@ -338,5 +345,6 @@ pub mod ecs {
         use crate::ecs::math_op::math_op::{Vec3, Quat};
         include!("ecs/system/rotation.rs");
         include!("ecs/system/camera_movement.rs");
+        include!("ecs/system/input_system.rs");
     }
 }

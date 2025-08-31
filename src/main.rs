@@ -12,7 +12,7 @@ use display::{Display, FpsCounter};
 use cuda_wrapper::{CudaContext, dim3};
 
 use ecs::ecs::World;
-use ecs::ecs::system::{update_rotation, move_entity};
+use ecs::ecs::system::{handle_input_event, apply_input};
 use ecs::ecs::components::{
     Transform, Camera, SdfBase, SdfType, MaterialComponent, TextureManager,
     Rotating, SpaceFolding, Axis
@@ -55,7 +55,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             speed_deg_per_sec: 30.0,
         });
 
-    // Texture manager stays the same
+    // Texture manager
     let mut tex_mgr = TextureManager::new();
     
     let basis_ent = scene::spawn_basis_gizmo(
@@ -68,56 +68,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     )?;
     let _tree_entity = scene::spawn_demo_csg(&mut world, &mut tex_mgr)?;
 
-    // — CUBE — 
-    // let mut cube_ent = world.spawn();
-    // world.insert_transform(cube_ent, Transform {
-    //     position: Vec3::new(0.0, 0.0, -10.0),
-    //     rotation: Quat::identity(),
-    // });
-    // // 1) SDF shape
-    // world.insert_sdf_base(cube_ent, SdfBase {
-    //     sdf_type: SdfType::Cube,
-    //     params: [1.0, 1.0, 1.0], // half-extents
-    // });
-    // // 2) Material
-    // let cube_tex = tex_mgr.load(Path::new("./src/textures/lines_texture.png"))?;
-    // world.insert_material(cube_ent, MaterialComponent {
-    //     color: [0.0, 0.5, 0.5],
-    //     texture: Some(cube_tex),
-    //     use_texture: false,
-    // });
-    // // Space folding
-    // world.insert_space_folding(cube_ent, SpaceFolding::new_2d(Mat3::Id * 10.0, Axis::U, Axis::W));
-    // // 3) Rotation
-    // world.insert_rotating(cube_ent, Rotating {
-    //     speed_deg_per_sec: 30.0,
-    // });
-
-    // // — SPHERE — 
-    // let sphere_ent = world.spawn();
-    // world.insert_transform(sphere_ent, Transform {
-    //     position: Vec3::new(0.0, 0.0, -10.0),
-    //     rotation: Quat::identity(),
-    // });
-    // // SDF
-    // world.insert_sdf_base(sphere_ent, SdfBase {
-    //     sdf_type: SdfType::Sphere,
-    //     params: [1.5, 0.0, 0.0], // radius, unused, unused
-    // });
-    // // Material
-    // let wood_tex = tex_mgr.load(Path::new("./src/textures/Wood_texture.png"))?;
-    // world.insert_material(sphere_ent, MaterialComponent {
-    //     color: [0.5, 0.5, 0.0],
-    //     texture: Some(wood_tex),
-    //     use_texture: false,
-    // });
-    // // Lattice‐folding
-    // world.insert_space_folding(sphere_ent, SpaceFolding::new_1d(Mat3::Id * 5.0, Axis::U));
-    // // Rotation
-    // world.insert_rotating(sphere_ent, Rotating {
-    //     speed_deg_per_sec: 30.0,
-    // });
-
     // Initialize the SDL2 context
     let mut display = Display::new(
         "xor Renderer",
@@ -129,7 +79,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Allows async DtoH memory transfert
     let bytes = (width * height * 3) as usize;
-    // let mut host_img: Vec<u8> = vec![0; bytes];
     let pinned = cuda_context.alloc_pinned(bytes)?;
     let ev_done = cuda_context.create_event()?;
 
@@ -201,67 +150,23 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Instantiate the CUDA graph
     let graph_exec = cuda_context.instantiate_graph(graph)?;
 
-    // Parameters to be used in the graph
-    let mut x_click = 0f32;
-    let mut y_click = 0f32;
-    let mouse_down = Arc::new(Mutex::new(false)); // mouse_down wrapped in Arc<Mutex<_>> for thread-safe access
-    let mut rotation_dir_x_axis = 0.0f32;
-    let mut rotation_dir_y_axis = 0.0f32;
-
-    // ── Camera input state ──────────────────────────────────
-    let mut cam_yaw_dir: f32 = 0.0; // ← = -1, → = +1
-    let mut cam_pitch_dir: f32 = 0.0; // ↑ = -1 (look up), ↓ = +1 (look down)
-    let mut cam_forward: bool = false; // SPACE held → move forward
-
     // Main loop
     'running: loop {
-        for event in display.poll_events() {
-            match event {
-                Event::Quit { .. } => break 'running,
 
-                Event::KeyDown { keycode: Some(Keycode::Left), repeat: false, .. } => { cam_yaw_dir = -1.0; },
-                Event::KeyDown { keycode: Some(Keycode::Right), repeat: false, .. } => { cam_yaw_dir = 1.0; },
-                Event::KeyUp { keycode: Some(Keycode::Left), .. } => { if cam_yaw_dir < 0.0 { cam_yaw_dir = 0.0; } },
-                Event::KeyUp { keycode: Some(Keycode::Right), .. } => { if cam_yaw_dir > 0.0 { cam_yaw_dir = 0.0; } },
-            
-                Event::KeyDown { keycode: Some(Keycode::Up), repeat: false, .. } => { cam_pitch_dir = -1.0; },
-                Event::KeyDown { keycode: Some(Keycode::Down), repeat: false, .. } => { cam_pitch_dir = 1.0; },
-                Event::KeyUp { keycode: Some(Keycode::Up), .. } => { if cam_pitch_dir < 0.0 { cam_pitch_dir = 0.0; } },
-                Event::KeyUp { keycode: Some(Keycode::Down), .. } => { if cam_pitch_dir > 0.0 { cam_pitch_dir = 0.0; } },
-            
-                Event::KeyDown { keycode: Some(Keycode::Space), repeat: false, .. } => { cam_forward = true; },
-                Event::KeyUp { keycode: Some(Keycode::Space), .. } => { cam_forward = false; },
-
-                Event::MouseButtonDown { x, y, .. } => {
-                    // world.despawn(cube_ent);
-
-                    let mut mouse_down_lock = mouse_down.lock().unwrap();
-                    *mouse_down_lock = true;
-                    x_click = x as f32;
-                    y_click = y as f32;
-                },
-                Event::MouseButtonUp { .. } => {
-                    let mut mouse_down_lock = mouse_down.lock().unwrap();
-                    *mouse_down_lock = false;
-                },
-                Event::MouseMotion { x, y, .. } => {
-                    if *mouse_down.lock().unwrap() {
-                        x_click = x as f32;
-                        y_click = y as f32;
-                    }
-                },
-                _ => {}
-            }
-        }
-
+        // Time update
         let now = Instant::now();
         let dt = now.duration_since(last_frame_time).as_secs_f32();
         last_frame_time = now;
 
-        if cam_yaw_dir != 0.0 || cam_pitch_dir != 0.0 || cam_forward {
-            // move_entity(&mut world, basis_ent, dt, cam_yaw_dir, cam_pitch_dir, cam_forward);
-            move_entity(&mut world, cam_ent, dt, cam_yaw_dir, cam_pitch_dir, cam_forward);
+        // update input state
+        for event in display.poll_events() {
+            if matches!(event, Event::Quit { .. }) { break 'running; }
+            handle_input_event(&mut world, &event);
         }
+
+        // apply input on world
+        apply_input(&mut world, dt, cam_ent);
+        
 
         if first_image || world.update_scene(&mut tex_mgr)? {
 
