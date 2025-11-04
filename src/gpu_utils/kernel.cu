@@ -143,7 +143,7 @@ enum CsgOperation {
     // Extend as needed
 };
 
-#define MAX_LEAFS 64
+#define MAX_LEAFS 8192
 #define INVALID_LEAF 0xFFFFFFFFu
 
 struct GpuCsgTree {
@@ -637,6 +637,49 @@ void fill_leaf_distances_N(
     }
 }
 
+__device__ __forceinline__
+CsgCombineResult eval_tree_union_big(
+    const GpuCsgTree& tree,
+    const GpuSdfObjectBase* __restrict__ sdf_objs,
+    const GpuSpaceFolding* __restrict__ foldings,
+    Vec3 p)
+{
+    CsgCombineResult out; out.d = 1e20f; out.leaf_id = 0u; out.grad_sign = 1.0f;
+
+    Vec3 tree_shift(0,0,0);
+    if (tree.tree_folding_id != INVALID_FOLDING) {
+        const GpuSpaceFolding& tf = foldings[tree.tree_folding_id];
+        Vec3 lc = (p - tree.bound_center) * tf.lattice_basis_inv;
+        Vec3 kf(
+            (tf.active_mask & 1u) ? roundf(lc.x) : 0.0f,
+            (tf.active_mask & 2u) ? roundf(lc.y) : 0.0f,
+            (tf.active_mask & 4u) ? roundf(lc.z) : 0.0f
+        );
+        tree_shift = kf * tf.lattice_basis;
+    }
+
+    const int n = (int)tree.leaf_count;
+    for (int k = 0; k < n; ++k) {
+        const unsigned sdf_id = tree.sdf_base_index_list[k];
+        const GpuSdfObjectBase& src = sdf_objs[sdf_id];
+
+        Vec3 c = src.center + tree_shift;
+        if (tree.tree_folding_id == INVALID_FOLDING && src.lattice_folding_id != INVALID_FOLDING) {
+            const GpuSpaceFolding& f = foldings[src.lattice_folding_id];
+            Vec3 lc = (p - c) * f.lattice_basis_inv;
+            Vec3 kf(
+                (f.active_mask & 1u) ? roundf(lc.x) : 0.0f,
+                (f.active_mask & 2u) ? roundf(lc.y) : 0.0f,
+                (f.active_mask & 4u) ? roundf(lc.z) : 0.0f
+            );
+            c = c + kf * f.lattice_basis;
+        }
+
+        float d = evaluate_sdf(src, p, c);
+        if (d < out.d) { out.d = d; out.leaf_id = k; }
+    }
+    return out;
+}
 
 __device__ __forceinline__
 CsgCombineResult eval_tree_dispatch(
@@ -646,7 +689,16 @@ CsgCombineResult eval_tree_dispatch(
     Vec3 p)
 {
     int n = (int)tree.leaf_count;
-    if (n <= 0) { return CsgCombineResult{1e20f, 0u, 1.0f}; }
+    if (n <= 0) return {1e20f, 0u, 1.0f};
+
+    // union-only fast path for big trees
+    bool all_union = true;
+    const int pc = min((int)tree.pair_count, n - 1);
+    for (int j = 0; j < pc; ++j) { if (tree.operation_list[j] != (uint8_t)UNION) { all_union = false; break; } }
+    if (all_union && n > 64) {
+        return eval_tree_union_big(tree, sdf_objs, foldings, p);
+    }
+
     if (n > MAX_LEAFS) n = MAX_LEAFS;
 
     // next power-of-two bucket (cap at 64)
@@ -669,10 +721,79 @@ CsgCombineResult eval_tree_dispatch(
     }
 }
 
+extern "C" __global__
+void tree_BHV_generation(
+    const GpuCsgTree* __restrict__ csg_trees,
+    int num_trees,
+    const GpuSdfObjectBase* __restrict__ sdf_objs,
+    int num_objs,
+    int num_rays)
+{   
+    int id_object = blockIdx.x * blockDim.x + threadIdx.x;
+    int id_ray = blockIdx.y * blockDim.y + threadIdx.y;
 
+    if (id_object >= num_objs || id_ray >= num_rays) continue;
+        
+    const GpuSdfObjectBase& src = sdf_objs[j];
+
+    if (src.active == 0 || src.in_csg_tree == 0) continue;
+    
+    center = src.center;
+    
+        
+}
 //=======================================================================================================================================
 //=======================================================================================================================================
 //=======================================================================================================================================
+__device__ __forceinline__ Vec3 lerp(const Vec3& a, const Vec3& b, float t) {
+    return a*(1.0f - t) + b*t;
+}
+__device__ __forceinline__ float clamp01(float x){ return fminf(fmaxf(x,0.0f),1.0f); }
+
+// ---------- tunables (edit these) ----------
+// Sky colors
+__constant__ float SKY_TOP[3]   = {24/255.f,  78/255.f, 119/255.f}; // #184e77  zenith
+__constant__ float SKY_HZ [3]   = {52/255.f, 160/255.f, 164/255.f}; // #34a0a4  horizon
+__constant__ float SKY_EXP      = 0.80f;   // gradient contrast. <1 = flatter, >1 = steeper
+
+// Extra bright horizon band
+__constant__ float HZ_BAND_GAIN = 0.12f;   // add white near horizon
+__constant__ float HZ_BAND_SHARP= 25.0f;   // higher = thinner band
+
+// Sun halo
+__constant__ float SUN_DIR[3]   = {0.12f, 0.95f, 0.18f}; // will be normalized
+__constant__ float SUN_CORE_GAIN= 0.10f;   // bright core weight
+__constant__ float SUN_CORE_POW = 150.0f;  // core sharpness
+__constant__ float SUN_GLOW_GAIN= 0.15f;   // wide glow weight
+__constant__ float SUN_GLOW_POW = 4.0f;    // glow falloff
+__constant__ float SUN_WARM[3]  = {1.0f, 0.95f, 0.80f}; // sun tint
+
+// Fog that blends object color to the sky background
+__constant__ float FOG_BASE     = 0.035f;  // base density
+__constant__ float FOG_HZ_MIN   = 0.40f;   // horizon_boost = MIN + SCALE*(1 - clamp(dir.y,0,1))
+__constant__ float FOG_HZ_SCALE = 0.1f;   // increase for stronger horizon fog
+
+// ---------- sky shader ----------
+__device__ Vec3 sky_color(const Vec3& dir) {
+    // base zenith→horizon gradient
+    float t = clamp01(dir.y * 0.5f + 0.5f);     // 0=horizon, 1=zenith
+    t = powf(t, SKY_EXP);
+    Vec3 top(SKY_TOP[0], SKY_TOP[1], SKY_TOP[2]);
+    Vec3 hz (SKY_HZ [0], SKY_HZ [1], SKY_HZ [2]);
+    Vec3 col = lerp(hz, top, t);
+
+    // horizon bright band
+    float band = expf(-fabsf(dir.y) * HZ_BAND_SHARP);
+    col = col + Vec3(1,1,1) * (HZ_BAND_GAIN * band);
+
+    // sun halo
+    Vec3 sdir = Vec3(SUN_DIR[0], SUN_DIR[1], SUN_DIR[2]).normalize();
+    float mu  = fmaxf(0.0f, Vec3::dot(dir.normalize(), sdir));
+    Vec3 warm(SUN_WARM[0], SUN_WARM[1], SUN_WARM[2]);
+    col = col + warm * (SUN_CORE_GAIN*powf(mu, SUN_CORE_POW) + SUN_GLOW_GAIN*powf(mu, SUN_GLOW_POW));
+    return col;
+}
+
 
 extern "C" __global__
 void raymarch(
@@ -708,8 +829,8 @@ void raymarch(
     Vec3 p = origin;
     float total_dist = 0.0f;
     const float eps      = 0.01f;
-    const float max_dist = 100.0f;
-    const int   max_steps = 100;
+    const float max_dist = 200.0f;
+    const int   max_steps = 1000;
 
     int steps    = 0;
     float min_dist;
@@ -845,47 +966,39 @@ void raymarch(
         total_dist = total_dist + min_dist;
         ++steps;
     }
+    // background from view direction
+    Vec3 bg = sky_color(dir);
 
-    // shading
     Vec3 color(0,0,0);
     if (best_j >= 0 && hit) {
-        // reconstruct final eval for shading (including fold)
         const GpuSdfObjectBase& eval = sdf_objs[best_j];
-
-        unsigned int mid;
-        if (best_tree_material != INVALID_MATERIAL) {mid = best_tree_material;} else {mid = eval.material_id;}
-        
+        unsigned int mid = (best_tree_material != INVALID_MATERIAL) ? best_tree_material
+                                                                    : eval.material_id;
         if (mid != INVALID_MATERIAL) {
-            
-            const GpuMaterial& mat = materials[ mid ];
-
-            if (mat.use_texture) {
-                color = obj_mapping(mat, eval, p, center_min);
-            } else {
-                color = Vec3(mat.color[0], mat.color[1], mat.color[2]);
-            }
+            const GpuMaterial& mat = materials[mid];
+            color = mat.use_texture ? obj_mapping(mat, eval, p, center_min)
+                                    : Vec3(mat.color[0], mat.color[1], mat.color[2]);
 
             Vec3 normal = (evaluate_grad_sdf(eval, p, center_min) * (-1.0f * best_grad_sign)).normalize();
-            Vec3 L = Vec3(0.5f,-1.0f,-0.6f).normalize();
-
+            Vec3 L = Vec3(0.5f, -1.0f, -0.6f).normalize();
             float lam = fmaxf(0.0f, Vec3::dot(normal, L));
-            color = color*fminf(lam+0.3,1.0);
-            if (cam.spp > 1) {
-                accumulate(cam.accum, color, i);
-            }
-            else {
-                cam.image[i*3 + 0] = color.x * 255.0f;
-                cam.image[i*3 + 1] = color.y * 255.0f;
-                cam.image[i*3 + 2] = color.z * 255.0f;
-            }
+            color = color * fminf(lam + 0.3f, 1.0f);
+
+            // previous blend: fog to SKY background only, stronger near horizon
+            float horizon_boost = FOG_HZ_MIN + FOG_HZ_SCALE * (1.0f - clamp01(dir.y));
+            float fog = 1.0f - expf(-FOG_BASE * horizon_boost * total_dist);
+            color = lerp(color, bg, clamp01(fog));
         }
+    } else {
+        color = bg;
     }
-    else {
-                cam.image[i*3 + 0] = 0.6f*135.0f;
-                cam.image[i*3 + 1] = 0.6f*206.0f; // blue sky background
-                cam.image[i*3 + 2] = 0.6f*235.0f;
-    }
+
+    cam.image[i*3 + 0] = color.x * 255.0f;
+    cam.image[i*3 + 1] = color.y * 255.0f;
+    cam.image[i*3 + 2] = color.z * 255.0f;
 }
+
+
 
 
 

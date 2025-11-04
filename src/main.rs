@@ -46,9 +46,14 @@ fn main() -> Result<(), Box<dyn Error>> {
             Camera::new(field_of_view, width, height, aperture, focus_distance, sample_per_pixel),
             &cuda_context,
     )?;
+
+    let yaw    = Quat::from_axis_angle(Vec3::Y, 35.0_f32.to_radians());
+    let pitch = Quat::from_axis_angle(Vec3::X, -10.0_f32.to_radians());
+    let cam_rot = yaw * pitch;
+
     world.insert_transform(cam_ent, Transform {
-        position: Vec3::new(0.0, 2.0, 3.0),
-        rotation: Quat::identity(),
+        position: Vec3::new(10.0, 3.0, -2.0),
+        rotation: cam_rot,
     });
     world.active_camera(cam_ent);
     world.insert_rotating(cam_ent, Rotating {
@@ -60,13 +65,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     
     let basis_ent = scene::spawn_basis_gizmo(
         &mut world,
-        Vec3::new(0.0, 0.0, -10.0), // origin
+        Vec3::new(8.7, -1.5, -10.0), // origin
         1.4,   // axis_len
         0.06,  // shaft_radius
         0.32,  // cone_half_h
         0.14,  // cone_base_r
     )?;
-    let _tree_entity = scene::spawn_demo_csg(&mut world, &mut tex_mgr)?;
+    let _tree_entity = scene::spawn_menger_showcase_host_batched(&mut world, &mut tex_mgr)?;
 
     // Initialize the SDL2 context
     let mut display = Display::new(

@@ -128,15 +128,41 @@ pub mod math_op {
             a32: 0.0,
             a33: 1.0, };
         pub const Zero: Self = Self { 
-            a11: 0.0,
-            a12: 0.0,
-            a13: 0.0,
-            a21: 0.0,
-            a22: 0.0,
-            a23: 0.0,
-            a31: 0.0,
-            a32: 0.0,
-            a33: 0.0, };
+            a11: 0.0, a12: 0.0, a13: 0.0,
+            a21: 0.0, a22: 0.0, a23: 0.0,
+            a31: 0.0, a32: 0.0,a33: 0.0, };
+
+
+        /// Diagonal matrix with scales along U,V,W.
+        #[inline]
+        pub const fn diag(su: f32, sv: f32, sw: f32) -> Self {
+            Self {
+                a11: su,  a12: 0.0, a13: 0.0,
+                a21: 0.0, a22: sv,  a23: 0.0,
+                a31: 0.0, a32: 0.0, a33: sw,
+            }
+        }
+
+        /// Build from column vectors (c0,c1,c2).
+        #[inline]
+        pub fn from_cols(c0: Vec3, c1: Vec3, c2: Vec3) -> Self {
+            Self {
+                a11: c0.x, a12: c1.x, a13: c2.x,
+                a21: c0.y, a22: c1.y, a23: c2.y,
+                a31: c0.z, a32: c1.z, a33: c2.z,
+            }
+        }
+
+        /// Build from row vectors (r0,r1,r2).
+        #[inline]
+        pub fn from_rows(r0: Vec3, r1: Vec3, r2: Vec3) -> Self {
+            Self {
+                a11: r0.x, a12: r0.y, a13: r0.z,
+                a21: r1.x, a22: r1.y, a23: r1.z,
+                a31: r2.x, a32: r2.y, a33: r2.z,
+            }
+        }
+
 
         pub const fn det(&self) -> f32 {
             self.a11 * (self.a22*self.a33 - self.a23*self.a32) 

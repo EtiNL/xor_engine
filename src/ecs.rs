@@ -230,11 +230,11 @@ pub mod ecs {
                 cam_bufs: None,
 
 
-                gpu_csg_trees:   GpuBuffer::<GpuCsgTree>::new(8)?,
-                gpu_sdf_objects: GpuBuffer::<GpuSdfObjectBase>::new(8)?,
-                gpu_materials:   GpuBuffer::<GpuMaterial>::new(8)?,
-                gpu_lights:      GpuBuffer::<GpuLight>::new(8)?,
-                gpu_foldings:    GpuBuffer::<GpuSpaceFolding>::new(8)?,
+                gpu_csg_trees:   GpuBuffer::<GpuCsgTree>::new(1000)?,
+                gpu_sdf_objects: GpuBuffer::<GpuSdfObjectBase>::new(1000)?,
+                gpu_materials:   GpuBuffer::<GpuMaterial>::new(1000)?,
+                gpu_lights:      GpuBuffer::<GpuLight>::new(1000)?,
+                gpu_foldings:    GpuBuffer::<GpuSpaceFolding>::new(1000)?,
 
                 active_camera: None,
             })
