@@ -3,7 +3,7 @@
 A real-time ray marching engine built with Rust and CUDA that renders procedural geometry using signed distance functions (SDFs), constructive solid geometry (CSG), and space folding.
 
 <p align="center">
-  <img src="assets/img/Xor_engine/Xor_menger.png" alt="Menger sponge showcase" width="80%">
+  <img src="Readme_img/Xor_menger.png" alt="Menger sponge showcase" width="80%">
 </p>
 
 ## Overview
@@ -56,7 +56,7 @@ cargo run --release
 
 For an in-depth explanation of the techniques and implementation details, see the full article:
 
-**[Rust + CUDA Ray-Marching Engine: Technical Overview](link-to-your-blog-post)**
+**[Rust + CUDA Ray-Marching Engine: Technical Overview](https://etinl.github.io/2025/06/12/Raymarching-Engine.html)**
 
 The article covers:
 - How signed distance functions work and why they're useful
