@@ -87,7 +87,7 @@ xor_engine/
 
 ## Performance
 
-Typical frame times on RTX 3070 @ 800×600:
+Typical frame times on laptop RTX 3060 @ 800×600:
 - **generate_rays**: ~0.1 ms
 - **raymarch**: ~2-4 ms (scene dependent)
 - **Total**: 220-400 FPS for typical scenes
