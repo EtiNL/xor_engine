@@ -576,8 +576,6 @@ CsgCombineResult combine_distances_N(
     return out;
 }
 
-// kernel.cu
-
 template<int N>
 __device__ __forceinline__
 void fill_leaf_distances_N(
@@ -721,18 +719,20 @@ CsgCombineResult eval_tree_dispatch(
     }
 }
 
+//=======================================================================================================================================
+//=======================================================================================================================================
+//=======================================================================================================================================
+
 extern "C" __global__
 void tree_BHV_generation(
     const GpuCsgTree* __restrict__ csg_trees,
     int num_trees,
     const GpuSdfObjectBase* __restrict__ sdf_objs,
-    int num_objs,
-    int num_rays)
+    int num_objs)
 {   
     int id_object = blockIdx.x * blockDim.x + threadIdx.x;
-    int id_ray = blockIdx.y * blockDim.y + threadIdx.y;
 
-    if (id_object >= num_objs || id_ray >= num_rays) continue;
+    if (id_object >= num_objs) continue;
         
     const GpuSdfObjectBase& src = sdf_objs[j];
 
